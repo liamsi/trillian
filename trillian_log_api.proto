@@ -21,7 +21,7 @@ option go_package = "github.com/google/trillian";
 
 package trillian;
 
-import "trillian.proto";
+import "github.com/google/trillian/trillian.proto";
 import "google/rpc/status.proto";
 import "google/api/annotations.proto";
 
