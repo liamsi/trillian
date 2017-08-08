@@ -21,7 +21,7 @@ option go_package = "github.com/google/trillian";
 
 package trillian;
 
-import "trillian.proto";
+import "github.com/google/trillian/trillian.proto";
 import "google/api/annotations.proto";
 
 // MapLeaf represents the data behind Map leaves.
