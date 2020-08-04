@@ -40,6 +40,7 @@ const (
 \documentclass[convert]{standalone}
 \usepackage[dvipsnames]{xcolor}
 \usepackage{forest}
+\usepackage{times}
 
 
 \begin{document}
@@ -165,7 +166,7 @@ func (n nodeInfo) String() string {
 		attr = append(attr, *attrEphemeralNode)
 	}
 	if !n.leaf {
-		attr = append(attr, "circle, minimum size=3em, align=center")
+		attr = append(attr, "rounded corners, minimum size=3em, align=center")
 	} else {
 		attr = append(attr, "minimum size=1.5em, align=center, base=bottom")
 	}
@@ -335,7 +336,7 @@ func modifyRangeNodeInfo() error {
 }
 
 var dataFormat = func(id compact.NodeID) string {
-	return fmt.Sprintf("{$leaf_{%d}$}", id.Index)
+	return fmt.Sprintf("{$nid_{%d}, data_{%d}$}", id.Index, id.Index)
 }
 
 var nodeFormats = map[string]nodeTextFunc{
@@ -348,9 +349,39 @@ var nodeFormats = map[string]nodeTextFunc{
 		if id.Level >= 1 {
 			childLevel := id.Level - 1
 			leftChild := id.Index * 2
-			return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(H_{%d.%d} || H_{%d.%d})$}", id.Level, id.Index, childLevel, leftChild, childLevel, leftChild+1)
+			// minNs = min(leftMinNs,rightMinNs)
+			// maxNs = max(leftMaxNs,rightMaxNs)
+			//return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(H_{%d.%d} || H_{%d.%d})$}",
+			//	id.Level, id.Index,
+			//	childLevel, leftChild,
+			//	childLevel, leftChild+1)
+			return fmt.Sprintf("{"+
+				"$node_{%d.%d}=min_{%d.%d}||max_{%d.%d}||d_{%d.%d}$\\\\"+
+				"$min_{%d.%d}="+
+				"min(min_{%d.%d},max_{%d.%d})$ \\\\"+
+				"$max_{%d.%d}="+
+				"max(max_{%d.%d},min_{%d.%d})$ \\\\ "+
+				"$d_{%d.%d}="+
+				"H(node_{%d.%d} || node_{%d.%d})$"+
+				"}",
+				id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, // $node_{%d.%d}
+				id.Level, id.Index, // min_{%d.%d}
+				childLevel, leftChild, childLevel, leftChild+1, // min(min_{%d.%d},max_{%d.%d})$
+				id.Level, id.Index, // max_{%d.%d}
+				childLevel, leftChild, childLevel, leftChild+1, // max(max_{%d.%d},min_{%d.%d})$
+				id.Level, id.Index, // $d_{%d.%d}=
+				childLevel, leftChild, childLevel, leftChild+1, // H(node_{%d.%d} || node_{%d.%d})$
+			)
 		}
-		return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(leaf_{%[2]d})$}", id.Level, id.Index)
+		// 		return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(leaf_{%[2]d})$}", id.Level, id.Index)
+		return fmt.Sprintf("{"+
+			"$node_{%d.%d}=min_{%d.%d}||max_{%d.%d}||d_{%d.%d}$\\\\"+
+			"$min_{%d.%d} = nid_{%[2]d}$ \\\\ $max_{%d.%d} =nid_{%[2]d}$ \\\\ $d_{%d.%d}=H(data_{%[2]d})$"+
+			"}",
+			id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, id.Level, id.Index,
+			id.Level, id.Index,
+			id.Level, id.Index,
+			id.Level, id.Index)
 	},
 }
 
