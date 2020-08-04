@@ -39,8 +39,8 @@ const (
 % Author: treetex
 \documentclass[convert]{standalone}
 \usepackage[dvipsnames]{xcolor}
+\usepackage{amsmath}
 \usepackage{forest}
-\usepackage{times}
 
 
 \begin{document}
@@ -166,9 +166,9 @@ func (n nodeInfo) String() string {
 		attr = append(attr, *attrEphemeralNode)
 	}
 	if !n.leaf {
-		attr = append(attr, "rounded corners, minimum size=3em, align=center")
+		attr = append(attr, "inner xsep=1em, inner ysep=1em, rounded corners, minimum size=3em, align=center")
 	} else {
-		attr = append(attr, "minimum size=1.5em, align=center, base=bottom")
+		attr = append(attr, "inner xsep=5pt, inner ysep=5pt, minimum size=1.5em, base=bottom, align=center")
 	}
 	return strings.Join(attr, ", ")
 }
@@ -351,37 +351,23 @@ var nodeFormats = map[string]nodeTextFunc{
 			leftChild := id.Index * 2
 			// minNs = min(leftMinNs,rightMinNs)
 			// maxNs = max(leftMaxNs,rightMaxNs)
-			//return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(H_{%d.%d} || H_{%d.%d})$}",
-			//	id.Level, id.Index,
-			//	childLevel, leftChild,
-			//	childLevel, leftChild+1)
 			return fmt.Sprintf("{"+
-				"$node_{%d.%d}=min_{%d.%d}||max_{%d.%d}||d_{%d.%d}$\\\\"+
-				"$min_{%d.%d}="+
-				"min(min_{%d.%d},max_{%d.%d})$ \\\\"+
-				"$max_{%d.%d}="+
-				"max(max_{%d.%d},min_{%d.%d})$ \\\\ "+
-				"$d_{%d.%d}="+
-				"H(node_{%d.%d} || node_{%d.%d})$"+
+				"$min_{%[1]d.%[2]d}="+
+				"min(min_{%[3]d.%[4]d},max_{%[5]d.%[6]d})$ \\\\"+
+				"$max_{%[1]d.%[2]d}="+
+				"max(max_{%[3]d.%[4]d},min_{%[5]d.%[6]d})$ \\\\ "+
+				"$d_{%[1]d.%[2]d}="+
+				"H(node_{%[3]d.%[4]d} || node_{%[5]d.%[6]d})$"+
+				"\\vspace{2pt}\\\\$node_{%[1]d.%[2]d}=min_{%[1]d.%[2]d}||max_{%[1]d.%[2]d}||d_{%[1]d.%[2]d}$"+
 				"}",
-				id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, // $node_{%d.%d}
-				id.Level, id.Index, // min_{%d.%d}
-				childLevel, leftChild, childLevel, leftChild+1, // min(min_{%d.%d},max_{%d.%d})$
-				id.Level, id.Index, // max_{%d.%d}
-				childLevel, leftChild, childLevel, leftChild+1, // max(max_{%d.%d},min_{%d.%d})$
-				id.Level, id.Index, // $d_{%d.%d}=
-				childLevel, leftChild, childLevel, leftChild+1, // H(node_{%d.%d} || node_{%d.%d})$
+				id.Level, id.Index, childLevel, leftChild, childLevel, leftChild+1,
 			)
 		}
-		// 		return fmt.Sprintf("{$H_{%d.%d} =$ \\\\ $H(leaf_{%[2]d})$}", id.Level, id.Index)
 		return fmt.Sprintf("{"+
-			"$node_{%d.%d}=min_{%d.%d}||max_{%d.%d}||d_{%d.%d}$\\\\"+
-			"$min_{%d.%d} = nid_{%[2]d}$ \\\\ $max_{%d.%d} =nid_{%[2]d}$ \\\\ $d_{%d.%d}=H(data_{%[2]d})$"+
-			"}",
-			id.Level, id.Index, id.Level, id.Index, id.Level, id.Index, id.Level, id.Index,
-			id.Level, id.Index,
-			id.Level, id.Index,
-			id.Level, id.Index)
+			""+
+			"$min_{%[1]d.%[2]d} = nid_{%[2]d}$ \\\\ $max_{%[1]d.%[2]d} =nid_{%[2]d}$ \\\\ $d_{%[1]d.%[2]d}=H(data_{%[2]d})$"+
+			"\\vspace{2pt}\\\\$node_{%[1]d.%[2]d}=min_{%[1]d.%[2]d}||max_{%[1]d.%[2]d}||d_{%[1]d.%[2]d}$"+
+			"}", id.Level, id.Index)
 	},
 }
 
