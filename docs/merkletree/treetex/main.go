@@ -352,21 +352,20 @@ var nodeFormats = map[string]nodeTextFunc{
 			// minNs = min(leftMinNs,rightMinNs)
 			// maxNs = max(leftMaxNs,rightMaxNs)
 			return fmt.Sprintf("{"+
+				"$node_{%[1]d.%[2]d}$\\vspace{2pt}\\\\"+
 				"$min_{%[1]d.%[2]d}="+
 				"min(min_{%[3]d.%[4]d},max_{%[5]d.%[6]d})$ \\\\"+
 				"$max_{%[1]d.%[2]d}="+
 				"max(max_{%[3]d.%[4]d},min_{%[5]d.%[6]d})$ \\\\ "+
 				"$d_{%[1]d.%[2]d}="+
 				"H(node_{%[3]d.%[4]d} || node_{%[5]d.%[6]d})$"+
-				"\\vspace{2pt}\\\\$node_{%[1]d.%[2]d}=min_{%[1]d.%[2]d}||max_{%[1]d.%[2]d}||d_{%[1]d.%[2]d}$"+
 				"}",
 				id.Level, id.Index, childLevel, leftChild, childLevel, leftChild+1,
 			)
 		}
 		return fmt.Sprintf("{"+
-			""+
+			"$node_{%[1]d.%[2]d}$\\vspace{2pt}\\\\"+
 			"$min_{%[1]d.%[2]d} = nid_{%[2]d}$ \\\\ $max_{%[1]d.%[2]d} =nid_{%[2]d}$ \\\\ $d_{%[1]d.%[2]d}=H(data_{%[2]d})$"+
-			"\\vspace{2pt}\\\\$node_{%[1]d.%[2]d}=min_{%[1]d.%[2]d}||max_{%[1]d.%[2]d}||d_{%[1]d.%[2]d}$"+
 			"}", id.Level, id.Index)
 	},
 }
