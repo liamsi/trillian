@@ -38,7 +38,8 @@ wait_for_server_startup() {
   local port=$1
   set +e
   wget -q --spider --retry-connrefused --waitretry=1 -t 10 localhost:${port}
-  # Wait a bit more to give it a chance to become actually available e.g. if Travis is slow
+  # Wait a bit more to give it a chance to become actually available, e.g. if CI
+  # environment is slow.
   sleep 2
   wget -q --spider -t 1 localhost:${port}
   local rc=$?
@@ -100,6 +101,8 @@ kill_pid() {
 # Parameters:
 #   - number of log servers to run
 #   - number of log signers to run
+# Env:
+#   - If TEST_MYSQL_URI is set, uses that for the server --mysql_uri flag.
 # Populates:
 #  - HTTP_SERVER_1   : first HTTP server
 #  - RPC_SERVER_1    : first RPC server
@@ -112,14 +115,11 @@ kill_pid() {
 #  - ETCD_DB_DIR     : location of etcd database
 # If WITH_PKCS11 is set, also populates:
 #  - SOFTHSM_CONF    : location of the SoftHSM configuration file
+#
 log_prep_test() {
   # Default to one of each.
   local rpc_server_count=${1:-1}
   local log_signer_count=${2:-1}
-
-  echo "Building Trillian log code"
-  go build ${GOFLAGS} github.com/google/trillian/cmd/trillian_log_server/
-  go build ${GOFLAGS} github.com/google/trillian/cmd/trillian_log_signer/
 
   # Wipe the test database
   yes | bash "${TRILLIAN_PATH}/scripts/resetdb.sh"
@@ -127,6 +127,11 @@ log_prep_test() {
   local logserver_opts=''
   local logsigner_opts=''
   local has_etcd=0
+
+  if [[ "${TEST_MYSQL_URI}" != "" ]]; then
+    logserver_opts+=" --mysql_uri=${TEST_MYSQL_URI}"
+    logsigner_opts+=" --mysql_uri=${TEST_MYSQL_URI}"
+  fi
 
   # Start a local etcd instance (if configured).
   if [[ -x "${ETCD_DIR}/etcd" ]]; then
@@ -160,7 +165,8 @@ log_prep_test() {
     http=$(pick_unused_port ${port})
 
     echo "Starting Log RPC server on localhost:${port}, HTTP on localhost:${http}"
-    ./trillian_log_server ${ETCD_OPTS} ${pkcs11_opts} ${logserver_opts} \
+    go run ${GOFLAGS} github.com/google/trillian/cmd/trillian_log_server \
+      ${ETCD_OPTS} ${pkcs11_opts} ${logserver_opts} \
       --rpc_endpoint="localhost:${port}" \
       --http_endpoint="localhost:${http}" \
       ${LOGGING_OPTS} \
@@ -187,7 +193,8 @@ log_prep_test() {
     port=$(pick_unused_port)
     http=$(pick_unused_port ${port})
     echo "Starting Log signer, HTTP on localhost:${http}"
-    ./trillian_log_signer ${ETCD_OPTS} ${pkcs11_opts} ${logsigner_opts} \
+    go run ${GOFLAGS} github.com/google/trillian/cmd/trillian_log_signer \
+      ${ETCD_OPTS} ${pkcs11_opts} ${logsigner_opts} \
       --sequencer_interval="1s" \
       --batch_size=500 \
       --rpc_endpoint="localhost:${port}" \
@@ -262,88 +269,6 @@ EOF
 
   # Success responses have the config name in them
   echo "${create_output}" | grep '"name":' > /dev/null
-}
-
-# map_prep_test prepares a set of running processes for a Trillian map test.
-# Parameters:
-#   - number of map servers to run
-# Populates:
-#  - RPC_SERVER_1    : first RPC server
-#  - RPC_SERVERS     : RPC target, either comma-separated list of RPC addresses or etcd service
-#  - RPC_SERVER_PIDS : bash array of RPC server pids
-map_prep_test() {
-  # Default to one map server.
-  local rpc_server_count=${1:-1}
-
-  echo "Building Trillian map code"
-  go build ${GOFLAGS} github.com/google/trillian/cmd/trillian_map_server/
-
-  # Wipe the test database
-  yes | bash "${TRILLIAN_PATH}/scripts/resetdb.sh"
-
-  # Start a set of Map RPC servers.
-  for ((i=0; i < rpc_server_count; i++)); do
-    port=$(pick_unused_port)
-    RPC_SERVERS="${RPC_SERVERS},localhost:${port}"
-    http=$(pick_unused_port ${port})
-
-    echo "Starting Map RPC server on localhost:${port}, HTTP on localhost:${http}"
-    ./trillian_map_server \
-      --rpc_endpoint="localhost:${port}" \
-      --http_endpoint="localhost:${http}" \
-      --single_transaction=true \
-      --alsologtostderr \
-      &
-    pid=$!
-    RPC_SERVER_PIDS+=(${pid})
-    wait_for_server_startup ${port}
-
-    # Use the first Map server as the Admin server (any would do)
-    if [[ $i -eq 0 ]]; then
-      RPC_SERVER_1="localhost:${port}"
-    fi
-  done
-  RPC_SERVERS="${RPC_SERVERS:1}"
-}
-
-# map_stop_tests closes down a set of running processes for a map test.
-# Assumes the following variables are set:
-#  - RPC_SERVER_PIDS : bash array of RPC server pids
-map_stop_test() {
-  echo "Stopping Map RPC servers (pids ${RPC_SERVER_PIDS[@]}"
-  kill_pid ${RPC_SERVER_PIDS[@]}
-}
-
-# map_provision creates new Trillian maps
-# Parameters:
-#   - location of admin server instance
-#   - number of maps to provision (default: 1)
-# Populates:
-#  - MAP_IDS: comma-separated list of tree IDs for provisioned maps
-map_provision() {
-  local admin_server="$1"
-  local count=${2:-1}
-
-  echo 'Building createtree'
-  go build ${GOFLAGS} github.com/google/trillian/cmd/createtree/
-
-  for ((i=0; i < count; i++)); do
-    local map_id=$(./createtree \
-      --logtostderr \
-      --admin_server="${admin_server}" \
-      --tree_type=MAP \
-      --hash_strategy=TEST_MAP_HASHER \
-      --private_key_format=PrivateKey \
-      --pem_key_path=${TRILLIAN_PATH}/testdata/map-rpc-server.privkey.pem \
-      --pem_key_password=towel \
-      --signature_algorithm=ECDSA)
-    echo "Created map ${tree_id}"
-    if [[ $i -eq 0 ]]; then
-      MAP_IDS="${map_id}"
-    else
-      MAP_IDS="${MAP_IDS},${map_id}"
-    fi
-  done
 }
 
 # on_exit will clean up anything in ${TO_KILL} and ${TO_DELETE}.

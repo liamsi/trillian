@@ -21,22 +21,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
 	defaultSequenceIntervalSeconds = 60
 
 	nonDeletedWhere = " WHERE (Deleted IS NULL OR Deleted = 'false')"
-
-	selectTreeIDs           = "SELECT TreeId FROM Trees"
-	selectNonDeletedTreeIDs = selectTreeIDs + nonDeletedWhere
 
 	selectTrees = `
 		SELECT
@@ -105,11 +101,10 @@ func (s *mysqlAdminStorage) CheckDatabaseAccessible(ctx context.Context) error {
 type adminTX struct {
 	tx *sql.Tx
 
-	// mu guards *direct* reads/writes on closed, which happen only on
-	// Commit/Rollback/IsClosed/Close methods.
-	// We don't check closed on *all* methods (apart from the ones above),
-	// as we trust tx to keep tabs on its state (and consequently fail to do
-	// queries after closed).
+	// mu guards reads/writes on closed, which happen on Commit/Close methods.
+	//
+	// We don't check closed on methods apart from the ones above, as we trust tx
+	// to keep tabs on its state, and hence fail to do queries after closed.
 	mu     sync.RWMutex
 	closed bool
 }
@@ -121,33 +116,14 @@ func (t *adminTX) Commit() error {
 	return t.tx.Commit()
 }
 
-func (t *adminTX) Rollback() error {
+func (t *adminTX) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.closed {
+		return nil
+	}
 	t.closed = true
 	return t.tx.Rollback()
-}
-
-func (t *adminTX) IsClosed() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.closed
-}
-
-func (t *adminTX) Close() error {
-	// Acquire and release read lock manually, without defer, as if the txn
-	// is not closed Rollback() will attempt to acquire the rw lock.
-	t.mu.RLock()
-	closed := t.closed
-	t.mu.RUnlock()
-	if !closed {
-		err := t.Rollback()
-		if err != nil {
-			glog.Warningf("Rollback error on Close(): %v", err)
-		}
-		return err
-	}
-	return nil
 }
 
 func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, error) {
@@ -167,37 +143,6 @@ func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, er
 		return nil, fmt.Errorf("error reading tree %v: %v", treeID, err)
 	}
 	return tree, nil
-}
-
-func (t *adminTX) ListTreeIDs(ctx context.Context, includeDeleted bool) ([]int64, error) {
-	var query string
-	if includeDeleted {
-		query = selectTreeIDs
-	} else {
-		query = selectNonDeletedTreeIDs
-	}
-
-	stmt, err := t.tx.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	rows, err := stmt.QueryContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	treeIDs := []int64{}
-	var treeID int64
-	for rows.Next() {
-		if err := rows.Scan(&treeID); err != nil {
-			return nil, err
-		}
-		treeIDs = append(treeIDs, treeID)
-	}
-	return treeIDs, nil
 }
 
 func (t *adminTX) ListTrees(ctx context.Context, includeDeleted bool) ([]*trillian.Tree, error) {
@@ -248,18 +193,18 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 
 	newTree := proto.Clone(tree).(*trillian.Tree)
 	newTree.TreeId = id
-	newTree.CreateTime, err = ptypes.TimestampProto(now)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build create time: %v", err)
+	newTree.CreateTime = timestamppb.New(now)
+	if err := newTree.CreateTime.CheckValid(); err != nil {
+		return nil, fmt.Errorf("failed to build create time: %w", err)
 	}
-	newTree.UpdateTime, err = ptypes.TimestampProto(now)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build update time: %v", err)
+	newTree.UpdateTime = timestamppb.New(now)
+	if err := newTree.UpdateTime.CheckValid(); err != nil {
+		return nil, fmt.Errorf("failed to build update time: %w", err)
 	}
-	rootDuration, err := ptypes.Duration(newTree.MaxRootDuration)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse MaxRootDuration: %v", err)
+	if err := newTree.MaxRootDuration.CheckValid(); err != nil {
+		return nil, fmt.Errorf("could not parse MaxRootDuration: %w", err)
 	}
+	rootDuration := newTree.MaxRootDuration.AsDuration()
 
 	insertTreeStmt, err := t.tx.PrepareContext(
 		ctx,
@@ -283,25 +228,20 @@ func (t *adminTX) CreateTree(ctx context.Context, tree *trillian.Tree) (*trillia
 	}
 	defer insertTreeStmt.Close()
 
-	privateKey, err := proto.Marshal(newTree.PrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("could not marshal PrivateKey: %v", err)
-	}
-
 	_, err = insertTreeStmt.ExecContext(
 		ctx,
 		newTree.TreeId,
 		newTree.TreeState.String(),
 		newTree.TreeType.String(),
-		newTree.HashStrategy.String(),
-		newTree.HashAlgorithm.String(),
-		newTree.SignatureAlgorithm.String(),
+		"RFC6962_SHA256", // Unused, filling in for backward compatibility.
+		"SHA256",         // Unused, filling in for backward compatibility.
+		"ECDSA",          // Unused, filling in for backward compatibility.
 		newTree.DisplayName,
 		newTree.Description,
 		nowMillis,
 		nowMillis,
-		privateKey,
-		newTree.PublicKey.GetDer(),
+		[]byte{}, // Unused, filling in for backward compatibility.
+		[]byte{}, // Unused, filling in for backward compatibility.
 		rootDuration/time.Millisecond,
 	)
 	if err != nil {
@@ -364,19 +304,14 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 	// Use the time truncated-to-millis throughout, as that's what's stored.
 	nowMillis := storage.ToMillisSinceEpoch(time.Now())
 	now := storage.FromMillisSinceEpoch(nowMillis)
-	tree.UpdateTime, err = ptypes.TimestampProto(now)
+	tree.UpdateTime = timestamppb.New(now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build update time: %v", err)
 	}
-	rootDuration, err := ptypes.Duration(tree.MaxRootDuration)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse MaxRootDuration: %v", err)
+	if err := tree.MaxRootDuration.CheckValid(); err != nil {
+		return nil, fmt.Errorf("could not parse MaxRootDuration: %w", err)
 	}
-
-	privateKey, err := proto.Marshal(tree.PrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("could not marshal PrivateKey: %v", err)
-	}
+	rootDuration := tree.MaxRootDuration.AsDuration()
 
 	stmt, err := t.tx.PrepareContext(ctx, updateTreeSQL)
 	if err != nil {
@@ -392,7 +327,7 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 		tree.Description,
 		nowMillis,
 		rootDuration/time.Millisecond,
-		privateKey,
+		[]byte{}, // Unused, filling in for backward compatibility.
 		tree.TreeId); err != nil {
 		return nil, err
 	}

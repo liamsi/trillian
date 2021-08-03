@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package keys provides access to public and private keys for signing and verification of signatures.
 package keys
 
 import (
@@ -21,7 +22,7 @@ import (
 	"sync"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -44,7 +45,7 @@ var (
 func RegisterHandler(keyProto proto.Message, handler ProtoHandler) {
 	handlersMu.Lock()
 	defer handlersMu.Unlock()
-	keyProtoType := proto.MessageReflect(keyProto).Descriptor().FullName()
+	keyProtoType := keyProto.ProtoReflect().Descriptor().FullName()
 
 	if _, alreadyExists := handlers[keyProtoType]; alreadyExists {
 		glog.Warningf("Overridding ProtoHandler for protobuf %q", keyProtoType)
@@ -53,12 +54,12 @@ func RegisterHandler(keyProto proto.Message, handler ProtoHandler) {
 	handlers[keyProtoType] = handler
 }
 
-// UnregisterHandler removes a previously-added protobuf message handler.
+// unregisterHandler removes a previously-added protobuf message handler.
 // See RegisterHandler().
-func UnregisterHandler(keyProto proto.Message) {
+func unregisterHandler(keyProto proto.Message) {
 	handlersMu.Lock()
 	defer handlersMu.Unlock()
-	delete(handlers, proto.MessageReflect(keyProto).Descriptor().FullName())
+	delete(handlers, keyProto.ProtoReflect().Descriptor().FullName())
 }
 
 // NewSigner uses a registered ProtoHandler (see RegisterHandler()) to convert a
@@ -71,7 +72,7 @@ func NewSigner(ctx context.Context, keyProto proto.Message) (crypto.Signer, erro
 	if keyProto == nil {
 		return nil, fmt.Errorf("nil keyProto")
 	}
-	keyProtoType := proto.MessageReflect(keyProto).Descriptor().FullName()
+	keyProtoType := keyProto.ProtoReflect().Descriptor().FullName()
 
 	if handler, ok := handlers[keyProtoType]; ok {
 		return handler(ctx, keyProto)

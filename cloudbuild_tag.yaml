@@ -1,6 +1,8 @@
 timeout: 1800s
 substitutions:
   _MYSQL_TAG: "5.7"
+options:
+  machineType: E2_HIGHCPU_32
 steps:
 - id: pull_mysql
   name : gcr.io/cloud-builders/docker
@@ -44,14 +46,6 @@ steps:
   args:
   - --dockerfile=examples/deployment/docker/log_signer/Dockerfile
   - --destination=gcr.io/${PROJECT_ID}/log_signer:${TAG_NAME}
-  - --cache=true
-  - --cache-dir= # Cache is in Google Container Registry
-  waitFor: ["-"]
-- id: build_map_server
-  name: gcr.io/kaniko-project/executor
-  args:
-  - --dockerfile=examples/deployment/docker/map_server/Dockerfile
-  - --destination=gcr.io/${PROJECT_ID}/map_server:${TAG_NAME}
   - --cache=true
   - --cache-dir= # Cache is in Google Container Registry
   waitFor: ["-"]

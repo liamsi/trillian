@@ -24,12 +24,9 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"google.golang.org/grpc"
 
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys/der"
-	"github.com/google/trillian/crypto/keyspb"
 	"github.com/google/trillian/extension"
 	"github.com/google/trillian/log"
 	"github.com/google/trillian/quota"
@@ -40,8 +37,7 @@ import (
 	"github.com/google/trillian/storage/testdb"
 	"github.com/google/trillian/util/clock"
 
-	_ "github.com/go-sql-driver/mysql"                   // Load MySQL driver
-	_ "github.com/google/trillian/crypto/keys/der/proto" // Register PrivateKey ProtoHandler
+	_ "github.com/go-sql-driver/mysql" // Load MySQL driver
 )
 
 var (
@@ -97,9 +93,6 @@ func NewLogEnvWithGRPCOptions(ctx context.Context, numSequencers int, serverOpts
 		AdminStorage: mysql.NewAdminStorage(db),
 		LogStorage:   mysql.NewLogStorage(db, nil),
 		QuotaManager: quota.Noop(),
-		NewKeyProto: func(ctx context.Context, spec *keyspb.Specification) (proto.Message, error) {
-			return der.NewProtoFromSpec(spec)
-		},
 	}
 
 	ret, err := NewLogEnvWithRegistryAndGRPCOptions(ctx, numSequencers, registry, serverOpts, clientOpts)

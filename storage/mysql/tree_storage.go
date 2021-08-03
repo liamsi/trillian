@@ -25,11 +25,11 @@ import (
 	"sync"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/storage/storagepb"
 	"github.com/google/trillian/storage/tree"
+	"google.golang.org/protobuf/proto"
 )
 
 // These statements are fixed
@@ -169,55 +169,29 @@ type treeTX struct {
 	treeType      trillian.TreeType
 	hashSizeBytes int
 	subtreeCache  *cache.SubtreeCache
-	dirty         []*storagepb.SubtreeProto
 	writeRevision int64
 }
 
-func (t *treeTX) getSubtree(ctx context.Context, treeRevision int64, nodeID tree.NodeID) (*storagepb.SubtreeProto, error) {
-	s, err := t.getSubtrees(ctx, treeRevision, []tree.NodeID{nodeID})
-	if err != nil {
-		return nil, err
-	}
-	switch len(s) {
-	case 0:
-		return nil, nil
-	case 1:
-		return s[0], nil
-	default:
-		return nil, fmt.Errorf("got %d subtrees, but expected 1", len(s))
-	}
-}
-
-func (t *treeTX) getSubtreesWithLock(ctx context.Context, rev int64, ids []tree.NodeID) ([]*storagepb.SubtreeProto, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.getSubtrees(ctx, rev, ids)
-}
-
-func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, nodeIDs []tree.NodeID) ([]*storagepb.SubtreeProto, error) {
-	glog.V(2).Infof("getSubtrees(len(nodeIDs)=%d)", len(nodeIDs))
+func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, ids [][]byte) ([]*storagepb.SubtreeProto, error) {
+	glog.V(2).Infof("getSubtrees(len(ids)=%d)", len(ids))
 	glog.V(4).Infof("getSubtrees(")
-	if len(nodeIDs) == 0 {
+	if len(ids) == 0 {
 		return nil, nil
 	}
 
-	tmpl, err := t.ts.getSubtreeStmt(ctx, len(nodeIDs))
+	tmpl, err := t.ts.getSubtreeStmt(ctx, len(ids))
 	if err != nil {
 		return nil, err
 	}
 	stx := t.tx.StmtContext(ctx, tmpl)
 	defer stx.Close()
 
-	args := make([]interface{}, 0, len(nodeIDs)+3)
+	args := make([]interface{}, 0, len(ids)+3)
 
-	// populate args with nodeIDs
-	for _, nodeID := range nodeIDs {
-		nodeIDBytes, err := subtreeKey(nodeID)
-		if err != nil {
-			return nil, err
-		}
-		glog.V(4).Infof("  nodeID: %x", nodeIDBytes)
-		args = append(args, nodeIDBytes)
+	// populate args with ids.
+	for _, id := range ids {
+		glog.V(4).Infof("  id: %x", id)
+		args = append(args, id)
 	}
 
 	args = append(args, t.treeID)
@@ -237,7 +211,7 @@ func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, nodeIDs []
 		return nil, rows.Err()
 	}
 
-	ret := make([]*storagepb.SubtreeProto, 0, len(nodeIDs))
+	ret := make([]*storagepb.SubtreeProto, 0, len(ids))
 
 	for rows.Next() {
 		var subtreeIDBytes []byte
@@ -273,12 +247,6 @@ func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, nodeIDs []
 	// The InternalNodes cache is possibly nil here, but the SubtreeCache (which called
 	// this method) will re-populate it.
 	return ret, nil
-}
-
-func (t *treeTX) addSubtrees(subtrees []*storagepb.SubtreeProto) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.dirty = append(t.dirty, subtrees...)
 }
 
 func (t *treeTX) storeSubtrees(ctx context.Context, subtrees []*storagepb.SubtreeProto) error {
@@ -338,14 +306,14 @@ func (t *treeTX) storeSubtrees(ctx context.Context, subtrees []*storagepb.Subtre
 func checkResultOkAndRowCountIs(res sql.Result, err error, count int64) error {
 	// The Exec() might have just failed
 	if err != nil {
-		return err
+		return mysqlToGRPC(err)
 	}
 
 	// Otherwise we have to look at the result of the operation
 	rowsAffected, rowsError := res.RowsAffected()
 
 	if rowsError != nil {
-		return rowsError
+		return mysqlToGRPC(rowsError)
 	}
 
 	if rowsAffected != count {
@@ -358,33 +326,16 @@ func checkResultOkAndRowCountIs(res sql.Result, err error, count int64) error {
 
 // getSubtreesAtRev returns a GetSubtreesFunc which reads at the passed in rev.
 func (t *treeTX) getSubtreesAtRev(ctx context.Context, rev int64) cache.GetSubtreesFunc {
-	return func(ids []tree.NodeID) ([]*storagepb.SubtreeProto, error) {
+	return func(ids [][]byte) ([]*storagepb.SubtreeProto, error) {
 		return t.getSubtrees(ctx, rev, ids)
 	}
-}
-
-// GetMerkleNodes returns the requests nodes at (or below) the passed in treeRevision.
-func (t *treeTX) GetMerkleNodes(ctx context.Context, treeRevision int64, nodeIDs []tree.NodeID) ([]tree.Node, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	return t.subtreeCache.GetNodes(nodeIDs, t.getSubtreesAtRev(ctx, treeRevision))
 }
 
 func (t *treeTX) SetMerkleNodes(ctx context.Context, nodes []tree.Node) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	for _, n := range nodes {
-		err := t.subtreeCache.SetNodeHash(n.NodeID, n.Hash,
-			func(nID tree.NodeID) (*storagepb.SubtreeProto, error) {
-				return t.getSubtree(ctx, t.writeRevision, nID)
-			})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	rev := t.writeRevision - 1
+	return t.subtreeCache.SetNodes(nodes, t.getSubtreesAtRev(ctx, rev))
 }
 
 func (t *treeTX) Commit(ctx context.Context) error {
@@ -392,13 +343,12 @@ func (t *treeTX) Commit(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.writeRevision > -1 {
-		if err := t.subtreeCache.Flush(ctx, func(ctx context.Context, st []*storagepb.SubtreeProto) error {
-			return t.storeSubtrees(ctx, st)
-		}); err != nil {
-			glog.Warningf("TX commit flush error: %v", err)
+		tiles, err := t.subtreeCache.UpdatedTiles()
+		if err != nil {
+			glog.Warningf("SubtreeCache updated tiles error: %v", err)
 			return err
 		}
-		if err := t.storeSubtrees(ctx, t.dirty); err != nil {
+		if err := t.storeSubtrees(ctx, tiles); err != nil {
 			glog.Warningf("TX commit flush error: %v", err)
 			return err
 		}
@@ -409,13 +359,6 @@ func (t *treeTX) Commit(ctx context.Context) error {
 		return err
 	}
 	return nil
-}
-
-func (t *treeTX) Rollback() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	return t.rollbackInternal()
 }
 
 func (t *treeTX) rollbackInternal() error {
@@ -430,39 +373,12 @@ func (t *treeTX) rollbackInternal() error {
 func (t *treeTX) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if !t.closed {
-		err := t.rollbackInternal()
-		if err != nil {
-			glog.Warningf("Rollback error on Close(): %v", err)
-		}
-		return err
+	if t.closed {
+		return nil
 	}
-	return nil
-}
-
-func (t *treeTX) IsOpen() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	return !t.closed
-}
-
-// subtreeKey returns a non-nil []byte suitable for use as a primary key column
-// for the subtree rooted at the passed-in node ID. Returns an error if the ID
-// is not aligned to bytes.
-//
-// TODO(pavelkalinnikov): This function is duplicated in multiple storage
-// implementations. We should create a common "tree layout" type in the
-// top-level storage package and reuse it for ID/strata validation.
-func subtreeKey(id tree.NodeID) ([]byte, error) {
-	// TODO(pavelkalinnikov): Extend this check to verify strata boundaries.
-	if id.PrefixLenBits%8 != 0 {
-		return nil, fmt.Errorf("invalid subtree ID - not multiple of 8: %d", id.PrefixLenBits)
+	err := t.rollbackInternal()
+	if err != nil {
+		glog.Warningf("Rollback error on Close(): %v", err)
 	}
-	// The returned slice must not be nil, as it would correspond to NULL in SQL.
-	if bytes := id.Path; bytes != nil {
-		return bytes[:id.PrefixLenBits/8], nil
-	}
-	return []byte{}, nil
+	return err
 }

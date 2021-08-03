@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
 	"github.com/google/trillian/server/interceptor"
@@ -35,6 +33,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	sa "github.com/google/trillian/server/admin"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
@@ -52,10 +52,7 @@ func TestAdminServer_CreateTree(t *testing.T) {
 	invalidTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	invalidTree.TreeState = trillian.TreeState_UNKNOWN_TREE_STATE
 
-	timestamp, err := ptypes.TimestampProto(time.Unix(1000, 0))
-	if err != nil {
-		t.Fatalf("TimestampProto() returned err = %v", err)
-	}
+	timestamp := timestamppb.New(time.Unix(1000, 0))
 
 	// All fields set below are ignored / overwritten by storage
 	generatedFieldsTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
@@ -152,7 +149,6 @@ func TestAdminServer_UpdateTree(t *testing.T) {
 	successWant.TreeState = successTree.TreeState
 	successWant.DisplayName = successTree.DisplayName
 	successWant.Description = successTree.Description
-	successWant.PrivateKey = nil // redacted on responses
 
 	tests := []struct {
 		desc                 string
@@ -212,14 +208,8 @@ func TestAdminServer_UpdateTree(t *testing.T) {
 			continue
 		}
 
-		created, err := ptypes.Timestamp(tree.CreateTime)
-		if err != nil {
-			t.Errorf("%v: failed to convert timestamp: %v", test.desc, err)
-		}
-		updated, err := ptypes.Timestamp(tree.UpdateTime)
-		if err != nil {
-			t.Errorf("%v: failed to convert timestamp: %v", test.desc, err)
-		}
+		created := tree.CreateTime.AsTime()
+		updated := tree.UpdateTime.AsTime()
 		if created.After(updated) {
 			t.Errorf("%v: CreateTime > UpdateTime (%v > %v)", test.desc, tree.CreateTime, tree.UpdateTime)
 		}
@@ -298,12 +288,7 @@ func TestAdminServer_ListTrees(t *testing.T) {
 				t.Fatalf("numTrees = %v, but we already have %v stored trees", test.numTrees, l)
 			} else if l < test.numTrees {
 				for i := l; i < test.numTrees; i++ {
-					var tree *trillian.Tree
-					if i%2 == 0 {
-						tree = proto.Clone(testonly.LogTree).(*trillian.Tree)
-					} else {
-						tree = proto.Clone(testonly.MapTree).(*trillian.Tree)
-					}
+					tree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 					req := &trillian.CreateTreeRequest{Tree: tree}
 					resp, err := ts.adminClient.CreateTree(ctx, req)
 					if err != nil {
@@ -324,12 +309,6 @@ func TestAdminServer_ListTrees(t *testing.T) {
 			sortByTreeID(got)
 			if diff := cmp.Diff(got, createdTrees, cmp.Comparer(proto.Equal)); diff != "" {
 				t.Errorf("post-ListTrees diff:\n%v", diff)
-			}
-
-			for _, tree := range resp.Tree {
-				if tree.PrivateKey != nil {
-					t.Errorf("PrivateKey not redacted: %v", tree)
-				}
 			}
 		})
 	}
@@ -356,7 +335,6 @@ func TestAdminServer_DeleteTree(t *testing.T) {
 		baseTree *trillian.Tree
 	}{
 		{desc: "logTree", baseTree: testonly.LogTree},
-		{desc: "mapTree", baseTree: testonly.MapTree},
 	}
 
 	for _, test := range tests {
@@ -450,7 +428,6 @@ func TestAdminServer_UndeleteTree(t *testing.T) {
 		baseTree *trillian.Tree
 	}{
 		{desc: "logTree", baseTree: testonly.LogTree},
-		{desc: "mapTree", baseTree: testonly.MapTree},
 	}
 
 	for _, test := range tests {

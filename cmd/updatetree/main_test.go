@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"testing"
 	"time"
 
@@ -47,7 +46,7 @@ func TestFreezeTree(t *testing.T) {
 		{
 			desc: "mandatoryOptsNotSet",
 			// Undo the flags set by runTest, so that mandatory options are no longer set.
-			setFlags: resetFlags,
+			setFlags: flagsaver.Save().MustRestore,
 			wantErr:  true,
 		},
 		{
@@ -113,6 +112,10 @@ func TestFreezeTree(t *testing.T) {
 func runTest(t *testing.T, tests []*testCase) {
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
+			// Note: Restore() must be called after the flag-reading bits are
+			// stopped, otherwise there might be a data race.
+			defer flagsaver.Save().MustRestore()
+
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -121,7 +124,6 @@ func runTest(t *testing.T, tests []*testCase) {
 				t.Fatalf("Error starting fake server: %v", err)
 			}
 			defer stopFakeServer()
-			defer flagsaver.Save().MustRestore()
 			*adminServerAddr = s.Addr
 			if tc.setFlags != nil {
 				tc.setFlags()
@@ -167,11 +169,4 @@ func expectCalls(call *gomock.Call, err error, prevErr ...error) *gomock.Call {
 	}
 	// If this function succeeds it should only be called once.
 	return call.Times(1)
-}
-
-// resetFlags sets all flags to their default values.
-func resetFlags() {
-	flag.Visit(func(f *flag.Flag) {
-		f.Value.Set(f.DefValue)
-	})
 }

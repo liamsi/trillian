@@ -14,26 +14,29 @@
 
 package smt
 
-import (
-	"github.com/google/trillian/merkle/hashers"
-	"github.com/google/trillian/storage/tree"
-)
+import "github.com/google/trillian/merkle/smt/node"
 
-// mapHasher is a wrapper around MapHasher bound to a specific tree ID.
+// Hasher provides sparse Merkle tree hash functions.
+type Hasher interface {
+	// HashEmpty returns the hash of an empty subtree with the given root. Note
+	// that the empty node ID indicates the root of the entire tree.
+	HashEmpty(treeID int64, root node.ID) []byte
+	// HashChildren returns the node hash based on its children node hashes.
+	HashChildren(l, r []byte) []byte
+}
+
+// mapHasher is a wrapper around Hasher bound to a specific tree ID.
 type mapHasher struct {
-	mh     hashers.MapHasher
+	mh     Hasher
 	treeID int64
 }
 
 // bindHasher returns a mapHasher binding the given hasher to a tree ID.
-func bindHasher(hasher hashers.MapHasher, treeID int64) mapHasher {
+func bindHasher(hasher Hasher, treeID int64) mapHasher {
 	return mapHasher{mh: hasher, treeID: treeID}
 }
 
 // hashEmpty returns the hash of an empty subtree with the given root ID.
-func (h mapHasher) hashEmpty(id tree.NodeID2) []byte {
-	oldID := tree.NewNodeIDFromID2(id)
-	height := h.mh.BitLen() - oldID.PrefixLenBits
-	// TODO(pavelkalinnikov): Make HashEmpty method take the NodeID2 directly.
-	return h.mh.HashEmpty(h.treeID, oldID.Path, height)
+func (h mapHasher) hashEmpty(id node.ID) []byte {
+	return h.mh.HashEmpty(h.treeID, id)
 }

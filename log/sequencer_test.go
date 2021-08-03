@@ -16,7 +16,6 @@ package log
 
 import (
 	"context"
-	"crypto"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,7 +24,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys/pem"
+	"github.com/google/trillian/merkle/compact"
 	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/quota"
 	"github.com/google/trillian/storage"
@@ -33,7 +32,6 @@ import (
 	"github.com/google/trillian/types"
 	"github.com/google/trillian/util/clock"
 
-	tcrypto "github.com/google/trillian/crypto"
 	stestonly "github.com/google/trillian/storage/testonly"
 	"github.com/google/trillian/storage/tree"
 )
@@ -61,152 +59,121 @@ var (
 
 	testRoot16 = &types.LogRootV1{
 		TreeSize: 16,
-		Revision: 5,
 		// RootHash can't be nil because that's how the sequencer currently
 		// detects that there was no stored tree head.
 		RootHash:       []byte{},
 		TimestampNanos: uint64(fakeTime.Add(-10 * time.Millisecond).UnixNano()),
 	}
-	compactTree16 = []tree.Node{{
-		NodeID: tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, PrefixLenBits: 60},
-		// TODO(pavelkalinnikov): Put a well-formed hash here. The current one is
-		// taken from testRoot16 and retained for regression purposes.
-		Hash:         []byte{},
-		NodeRevision: 5,
-	}}
+	// TODO(pavelkalinnikov): Put a well-formed hash here. The current one is
+	// taken from testRoot16 and retained for regression purposes.
+	compactTree16 = []tree.Node{{ID: compact.NewNodeID(4, 0), Hash: []byte{}}}
 
-	fixedGoSigner = newSignerWithFixedSig([]byte("signed"))
-	fixedSigner   = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256)
-
-	testSignedRoot16, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(testRoot16)
-	newSignedRoot16, _  = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).
-				SignLogRoot(&types.LogRootV1{
-			TimestampNanos: uint64(fakeTime.UnixNano()),
-			TreeSize:       testRoot16.TreeSize,
-			Revision:       testRoot16.Revision + 1,
-			RootHash:       testRoot16.RootHash,
-		})
+	testSignedRoot16 = makeSLR(testRoot16)
+	newSignedRoot16  = makeSLR(&types.LogRootV1{
+		TimestampNanos: uint64(fakeTime.UnixNano()),
+		TreeSize:       testRoot16.TreeSize,
+		RootHash:       testRoot16.RootHash,
+	})
 
 	testRoot17 = &types.LogRootV1{
 		TreeSize: 16,
-		Revision: 5,
 		// RootHash can't be nil because that's how the sequencer currently
 		// detects that there was no stored tree head.
 		RootHash:       []byte{},
 		TimestampNanos: uint64(fakeTime.UnixNano()),
 	}
-	testSignedRoot17, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(testRoot17)
+	testSignedRoot17 = makeSLR(testRoot17)
 
 	testRoot18 = &types.LogRootV1{
 		TreeSize: 16,
-		Revision: 5,
 		// RootHash can't be nil because that's how the sequencer currently
 		// detects that there was no stored tree head.
 		RootHash:       []byte{},
 		TimestampNanos: uint64(fakeTime.Add(10 * time.Millisecond).UnixNano()),
 	}
-	testSignedRoot18, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(testRoot18)
+	testSignedRoot18 = makeSLR(testRoot18)
 
 	// These will be accepted in either order because of custom sorting in the mock
 	updatedNodes = []tree.Node{
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10}, PrefixLenBits: 64},
-			Hash:         testonly.MustDecodeBase64("L5Iyd7aFOVewxiRm29xD+EU+jvEo4RfufBijKdflWMk="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(0, 16),
+			Hash: testonly.MustDecodeBase64("L5Iyd7aFOVewxiRm29xD+EU+jvEo4RfufBijKdflWMk="),
 		},
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, PrefixLenBits: 59},
-			Hash:         testonly.MustDecodeBase64("R57DrKTGuZdjCNXjv6InGrm4rABLOn9yWpdHmYOoLwU="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(5, 0),
+			Hash: testonly.MustDecodeBase64("R57DrKTGuZdjCNXjv6InGrm4rABLOn9yWpdHmYOoLwU="),
 		},
 	}
 
 	testRoot = &types.LogRootV1{
 		RootHash:       []byte{71, 158, 195, 172, 164, 198, 185, 151, 99, 8, 213, 227, 191, 162, 39, 26, 185, 184, 172, 0, 75, 58, 127, 114, 90, 151, 71, 153, 131, 168, 47, 5},
 		TimestampNanos: uint64(fakeTime.UnixNano()),
-		Revision:       6,
 		TreeSize:       17,
 	}
-	testSignedRoot, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(testRoot)
+	testSignedRoot = makeSLR(testRoot)
 
 	// TODO(pavelkalinnikov): Generate boilerplate structures, like the ones
 	// below, in a more compact way.
 	testRoot21 = &types.LogRootV1{
 		TreeSize:       21,
-		Revision:       5,
 		RootHash:       testonly.MustDecodeBase64("lfLXEAeBNB/zX1+97lInoqpnLJtX+AS/Ok0mwlWFpRc="),
 		TimestampNanos: uint64(fakeTime.Add(-10 * time.Millisecond).UnixNano()),
 	}
-	testSignedRoot21, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(testRoot21)
+	testSignedRoot21 = makeSLR(testRoot21)
 	// Nodes that will be loaded when updating the tree of size 21.
 	compactTree21 = []tree.Node{
-		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, PrefixLenBits: 60},
-			Hash:         testonly.MustDecodeBase64("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="),
-			NodeRevision: 5,
-		},
-		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10}, PrefixLenBits: 62},
-			Hash:         testonly.MustDecodeBase64("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
-			NodeRevision: 5,
-		},
-		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}, PrefixLenBits: 64},
-			Hash:         testonly.MustDecodeBase64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
-			NodeRevision: 5,
-		},
+		{ID: compact.NewNodeID(4, 0), Hash: testonly.MustDecodeBase64("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=")},
+		{ID: compact.NewNodeID(2, 4), Hash: testonly.MustDecodeBase64("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=")},
+		{ID: compact.NewNodeID(0, 20), Hash: testonly.MustDecodeBase64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
 	}
 	// Nodes that will be stored after updating the tree of size 21.
 	updatedNodes21 = []tree.Node{
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, PrefixLenBits: 59},
-			Hash:         testonly.MustDecodeBase64("1oUtLDlyOWXLHLAvL3NvWaO4D9kr0oQYScylDlgjey4="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(5, 0),
+			Hash: testonly.MustDecodeBase64("1oUtLDlyOWXLHLAvL3NvWaO4D9kr0oQYScylDlgjey4="),
 		},
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10}, PrefixLenBits: 61},
-			Hash:         testonly.MustDecodeBase64("1yCvo/9xbNIileBAEjc+c00GxVQQV7h54Tdmkc48uRU="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(3, 2),
+			Hash: testonly.MustDecodeBase64("1yCvo/9xbNIileBAEjc+c00GxVQQV7h54Tdmkc48uRU="),
 		},
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}, PrefixLenBits: 63},
-			Hash:         testonly.MustDecodeBase64("S55qEsQMx90/eq1fSb87pYCB9WIYL7hBgiTY+B9LmPw="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(1, 10),
+			Hash: testonly.MustDecodeBase64("S55qEsQMx90/eq1fSb87pYCB9WIYL7hBgiTY+B9LmPw="),
 		},
 		{
-			NodeID:       tree.NodeID{Path: []uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15}, PrefixLenBits: 64},
-			Hash:         testonly.MustDecodeBase64("L5Iyd7aFOVewxiRm29xD+EU+jvEo4RfufBijKdflWMk="),
-			NodeRevision: 6,
+			ID:   compact.NewNodeID(0, 21),
+			Hash: testonly.MustDecodeBase64("L5Iyd7aFOVewxiRm29xD+EU+jvEo4RfufBijKdflWMk="),
 		},
 	}
 	// The new root after updating the tree of size 21.
 	updatedRoot21 = &types.LogRootV1{
 		RootHash:       testonly.MustDecodeBase64("1oUtLDlyOWXLHLAvL3NvWaO4D9kr0oQYScylDlgjey4="),
 		TimestampNanos: uint64(fakeTime.UnixNano()),
-		Revision:       6,
 		TreeSize:       22,
 	}
-	updatedSignedRoot21, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(updatedRoot21)
+	updatedSignedRoot21 = makeSLR(updatedRoot21)
 
 	emptyRoot = &types.LogRootV1{
 		TimestampNanos: uint64(fakeTime.Add(-10 * time.Millisecond).UnixNano()),
 		TreeSize:       0,
-		Revision:       2,
 		RootHash:       rfc6962.DefaultHasher.EmptyRoot(),
 	}
-	signedEmptyRoot, _        = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(emptyRoot)
-	updatedSignedEmptyRoot, _ = tcrypto.NewSigner(0, fixedGoSigner, crypto.SHA256).SignLogRoot(&types.LogRootV1{
+	signedEmptyRoot        = makeSLR(emptyRoot)
+	updatedSignedEmptyRoot = makeSLR(&types.LogRootV1{
 		TimestampNanos: uint64(fakeTime.UnixNano()),
 		TreeSize:       0,
-		Revision:       3,
 		RootHash:       rfc6962.DefaultHasher.EmptyRoot(),
 	})
 )
 
+func makeSLR(root *types.LogRootV1) *trillian.SignedLogRoot {
+	logRoot, _ := root.MarshalBinary()
+	return &trillian.SignedLogRoot{LogRoot: logRoot}
+}
+
 // testParameters bundles up values needed for setting mock expectations in tests
 type testParameters struct {
-	logID  int64
-	signer crypto.Signer
+	logID int64
 
 	beginFails   bool
 	dequeueLimit int
@@ -235,8 +202,6 @@ type testParameters struct {
 	storeSignedRoot      *trillian.SignedLogRoot
 	storeSignedRootError error
 
-	writeRevision int64
-
 	overrideDequeueTime *time.Time
 
 	// qm is the quota.Manager to be used. If nil, quota.Noop() is used instead.
@@ -247,8 +212,8 @@ type testParameters struct {
 type testContext struct {
 	mockTx      *storage.MockLogTreeTX
 	fakeStorage storage.LogStorage
-	signer      *tcrypto.Signer
-	sequencer   *Sequencer
+	qm          quota.Manager
+	timeSource  clock.TimeSource
 }
 
 // This gets modified so tests need their own copies
@@ -261,29 +226,10 @@ func getLeaf42() *trillian.LogLeaf {
 	}
 }
 
-// newSignerWithFixedSig returns a fake signer that always returns the specified signature.
-func newSignerWithFixedSig(sig []byte) crypto.Signer {
-	key, err := pem.UnmarshalPublicKey(testonly.DemoPublicKey)
-	if err != nil {
-		panic(err)
-	}
-	return testonly.NewSignerWithFixedSig(key, sig)
-}
-
-func newSignerWithErr(signErr error) (crypto.Signer, error) {
-	key, err := pem.UnmarshalPublicKey(testonly.DemoPublicKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return testonly.NewSignerWithErr(key, signErr), nil
-}
-
 func createTestContext(ctrl *gomock.Controller, params testParameters) (testContext, context.Context) {
 	fakeStorage := &stestonly.FakeLogStorage{}
 	mockTx := storage.NewMockLogTreeTX(ctrl)
 
-	mockTx.EXPECT().WriteRevision(gomock.Any()).AnyTimes().Return(params.writeRevision, nil)
 	if params.beginFails {
 		fakeStorage.TXErr = errors.New("TX")
 	} else {
@@ -314,11 +260,11 @@ func createTestContext(ctrl *gomock.Controller, params testParameters) (testCont
 	}
 
 	if params.merkleNodesGet != nil {
-		ids := make([]tree.NodeID, 0, len(*params.merkleNodesGet))
+		ids := make([]compact.NodeID, 0, len(*params.merkleNodesGet))
 		for _, node := range *params.merkleNodesGet {
-			ids = append(ids, node.NodeID)
+			ids = append(ids, node.ID)
 		}
-		mockTx.EXPECT().GetMerkleNodes(gomock.Any(), params.writeRevision-1, ids).Return(*params.merkleNodesGet, params.merkleNodesGetError)
+		mockTx.EXPECT().GetMerkleNodes(gomock.Any(), ids).Return(*params.merkleNodesGet, params.merkleNodesGetError)
 	}
 
 	if params.updatedLeaves != nil {
@@ -338,23 +284,18 @@ func createTestContext(ctrl *gomock.Controller, params testParameters) (testCont
 		}
 	}
 
-	signer := tcrypto.NewSigner(0, params.signer, crypto.SHA256)
 	qm := params.qm
 	if qm == nil {
 		qm = quota.Noop()
 	}
-	sequencer := NewSequencer(rfc6962.DefaultHasher, clock.NewFake(fakeTime), fakeStorage, signer, nil, qm)
-	return testContext{mockTx: mockTx, fakeStorage: fakeStorage, signer: signer, sequencer: sequencer}, context.Background()
+	InitMetrics(nil)
+	return testContext{mockTx: mockTx, fakeStorage: fakeStorage, qm: qm, timeSource: clock.NewFake(fakeTime)}, context.Background()
 }
 
 // Tests for sequencer. Currently relies on storage mocks.
 // TODO(pavelkalinnikov): Consider using real in-memory storage.
 
 func TestIntegrateBatch(t *testing.T) {
-	signerErr, err := newSignerWithErr(errors.New("signerfailed"))
-	if err != nil {
-		t.Fatalf("Failed to create test signer (%v)", err)
-	}
 	leaves16 := []*trillian.LogLeaf{testLeaf16}
 	guardWindow := time.Second * 10
 	expectedCutoffTime := fakeTime.Add(-guardWindow)
@@ -367,7 +308,7 @@ func TestIntegrateBatch(t *testing.T) {
 		{Group: quota.Global, Kind: quota.Write},
 	}
 
-	var tests = []struct {
+	tests := []struct {
 		desc            string
 		params          testParameters
 		guardWindow     time.Duration
@@ -416,11 +357,9 @@ func TestIntegrateBatch(t *testing.T) {
 				shouldCommit:     true,
 				latestSignedRoot: testSignedRoot16,
 				dequeuedLeaves:   noLeaves,
-				writeRevision:    int64(testRoot16.Revision + 1),
 				merkleNodesGet:   &compactTree16,
 				updatedLeaves:    &noLeaves,
 				merkleNodesSet:   &noNodes,
-				signer:           fixedGoSigner,
 				storeSignedRoot:  newSignedRoot16,
 			},
 			maxRootDuration: 9 * time.Millisecond,
@@ -433,11 +372,9 @@ func TestIntegrateBatch(t *testing.T) {
 				shouldCommit:     true,
 				latestSignedRoot: testSignedRoot16,
 				dequeuedLeaves:   noLeaves,
-				writeRevision:    int64(testRoot16.Revision + 1),
 				merkleNodesGet:   &compactTree16,
 				updatedLeaves:    &noLeaves,
 				merkleNodesSet:   &noNodes,
-				signer:           fixedGoSigner,
 				storeSignedRoot:  newSignedRoot16,
 			},
 			maxRootDuration: 10 * time.Millisecond,
@@ -484,7 +421,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "get-merkle-nodes-fails",
 			params: testParameters{
 				logID:               154035,
-				writeRevision:       int64(testRoot21.Revision + 1),
 				dequeueLimit:        1,
 				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:    testSignedRoot21,
@@ -498,7 +434,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "update-seq-leaves-fails",
 			params: testParameters{
 				logID:               154035,
-				writeRevision:       int64(testRoot16.Revision + 1),
 				dequeueLimit:        1,
 				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:    testSignedRoot16,
@@ -513,7 +448,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "set-merkle-nodes-fails",
 			params: testParameters{
 				logID:               154035,
-				writeRevision:       int64(testRoot16.Revision + 1),
 				dequeueLimit:        1,
 				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:    testSignedRoot16,
@@ -529,7 +463,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "store-root-fails",
 			params: testParameters{
 				logID:                154035,
-				writeRevision:        int64(testRoot16.Revision + 1),
 				dequeueLimit:         1,
 				dequeuedLeaves:       []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:     testSignedRoot16,
@@ -538,32 +471,13 @@ func TestIntegrateBatch(t *testing.T) {
 				merkleNodesSet:       &updatedNodes,
 				storeSignedRoot:      nil,
 				storeSignedRootError: errors.New("storesignedroot"),
-				signer:               fixedGoSigner,
 			},
 			errStr: "storesignedroot",
-		},
-		{
-			desc: "signer-fails",
-			params: testParameters{
-				logID:               154035,
-				writeRevision:       int64(testRoot16.Revision + 1),
-				dequeueLimit:        1,
-				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
-				latestSignedRoot:    testSignedRoot16,
-				merkleNodesGet:      &compactTree16,
-				updatedLeaves:       &leaves16,
-				merkleNodesSet:      &updatedNodes,
-				storeSignedRoot:     nil,
-				signer:              signerErr,
-				skipStoreSignedRoot: true,
-			},
-			errStr: "signerfailed",
 		},
 		{
 			desc: "commit-fails",
 			params: testParameters{
 				logID:            154035,
-				writeRevision:    int64(testRoot16.Revision + 1),
 				dequeueLimit:     1,
 				shouldCommit:     true,
 				commitFails:      true,
@@ -574,7 +488,6 @@ func TestIntegrateBatch(t *testing.T) {
 				updatedLeaves:    &leaves16,
 				merkleNodesSet:   &updatedNodes,
 				storeSignedRoot:  nil,
-				signer:           fixedGoSigner,
 			},
 			errStr: "commit",
 		},
@@ -582,7 +495,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "sequence-empty",
 			params: testParameters{
 				logID:            154035,
-				writeRevision:    int64(emptyRoot.Revision) + 1,
 				dequeueLimit:     1,
 				shouldCommit:     true,
 				dequeuedLeaves:   noLeaves,
@@ -590,7 +502,6 @@ func TestIntegrateBatch(t *testing.T) {
 				updatedLeaves:    &noLeaves,
 				merkleNodesSet:   &noNodes,
 				storeSignedRoot:  updatedSignedEmptyRoot,
-				signer:           fixedGoSigner,
 			},
 			maxRootDuration: 5 * time.Millisecond,
 		},
@@ -598,7 +509,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "sequence-leaf-16",
 			params: testParameters{
 				logID:            154035,
-				writeRevision:    int64(testRoot16.Revision + 1),
 				dequeueLimit:     1,
 				shouldCommit:     true,
 				dequeuedLeaves:   []*trillian.LogLeaf{getLeaf42()},
@@ -607,7 +517,6 @@ func TestIntegrateBatch(t *testing.T) {
 				updatedLeaves:    &leaves16,
 				merkleNodesSet:   &updatedNodes,
 				storeSignedRoot:  testSignedRoot,
-				signer:           fixedGoSigner,
 			},
 			wantCount: 1,
 		},
@@ -615,7 +524,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "sequence-leaf-21",
 			params: testParameters{
 				logID:            154035,
-				writeRevision:    int64(testRoot21.Revision + 1),
 				dequeueLimit:     1,
 				shouldCommit:     true,
 				dequeuedLeaves:   []*trillian.LogLeaf{getLeaf42()},
@@ -624,7 +532,6 @@ func TestIntegrateBatch(t *testing.T) {
 				updatedLeaves:    &[]*trillian.LogLeaf{testLeaf21},
 				merkleNodesSet:   &updatedNodes21,
 				storeSignedRoot:  updatedSignedRoot21,
-				signer:           fixedGoSigner,
 			},
 			wantCount: 1,
 		},
@@ -632,7 +539,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "prev-root-timestamp-equals",
 			params: testParameters{
 				logID:               154035,
-				writeRevision:       int64(testRoot16.Revision + 1),
 				dequeueLimit:        1,
 				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:    testSignedRoot17,
@@ -647,7 +553,6 @@ func TestIntegrateBatch(t *testing.T) {
 			desc: "prev-root-timestamp-in-future",
 			params: testParameters{
 				logID:               154035,
-				writeRevision:       int64(testRoot16.Revision + 1),
 				dequeueLimit:        1,
 				dequeuedLeaves:      []*trillian.LogLeaf{getLeaf42()},
 				latestSignedRoot:    testSignedRoot18,
@@ -673,7 +578,7 @@ func TestIntegrateBatch(t *testing.T) {
 			c, ctx := createTestContext(ctrl, test.params)
 			tree := &trillian.Tree{TreeId: test.params.logID, TreeType: trillian.TreeType_LOG}
 
-			got, err := c.sequencer.IntegrateBatch(ctx, tree, 1, test.guardWindow, test.maxRootDuration)
+			got, err := IntegrateBatch(ctx, tree, 1, test.guardWindow, test.maxRootDuration, c.timeSource, c.fakeStorage, c.qm)
 			if err != nil {
 				if test.errStr == "" {
 					t.Errorf("IntegrateBatch(%+v)=%v,%v; want _,nil", test.params, got, err)
@@ -690,15 +595,11 @@ func TestIntegrateBatch(t *testing.T) {
 }
 
 func TestIntegrateBatch_PutTokens(t *testing.T) {
-	cryptoSigner := newSignerWithFixedSig(testSignedRoot.LogRootSignature)
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	// Needed to create a signer
-	hasher := rfc6962.DefaultHasher
 	ts := clock.NewFake(fakeTime)
-	signer := tcrypto.NewSigner(0, cryptoSigner, crypto.SHA256)
 
 	// Needed for IntegrateBatch calls
 	const treeID int64 = 1234
@@ -720,6 +621,8 @@ func TestIntegrateBatch_PutTokens(t *testing.T) {
 			LeafValue: []byte(fmt.Sprintf("leaf-%v", i)),
 		}
 	}
+
+	InitMetrics(nil)
 
 	tests := []struct {
 		desc                   string
@@ -774,9 +677,8 @@ func TestIntegrateBatch_PutTokens(t *testing.T) {
 			logTX.EXPECT().DequeueLeaves(any, any, any).Return(test.leaves, nil)
 			logTX.EXPECT().LatestSignedLogRoot(any).Return(testSignedRoot16, nil)
 			if len(test.leaves) != 0 {
-				logTX.EXPECT().GetMerkleNodes(any, any, any).Return(compactTree16, nil)
+				logTX.EXPECT().GetMerkleNodes(any, any).Return(compactTree16, nil)
 			}
-			logTX.EXPECT().WriteRevision(gomock.Any()).AnyTimes().Return(int64(testRoot16.Revision+1), nil)
 			logTX.EXPECT().UpdateSequencedLeaves(any, any).AnyTimes().Return(nil)
 			logTX.EXPECT().SetMerkleNodes(any, any).AnyTimes().Return(nil)
 			logTX.EXPECT().StoreSignedLogRoot(any, any).AnyTimes().Return(nil)
@@ -789,9 +691,8 @@ func TestIntegrateBatch_PutTokens(t *testing.T) {
 				qm.EXPECT().PutTokens(any, test.wantTokens, specs)
 			}
 
-			sequencer := NewSequencer(hasher, ts, logStorage, signer, nil /* mf */, qm)
 			tree := &trillian.Tree{TreeId: treeID, TreeType: trillian.TreeType_LOG}
-			leaves, err := sequencer.IntegrateBatch(ctx, tree, limit, guardWindow, maxRootDuration)
+			leaves, err := IntegrateBatch(ctx, tree, limit, guardWindow, maxRootDuration, ts, logStorage, qm)
 			if err != nil {
 				t.Errorf("%v: IntegrateBatch() returned err = %v", test.desc, err)
 				return

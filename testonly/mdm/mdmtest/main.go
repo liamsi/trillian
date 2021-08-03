@@ -23,24 +23,15 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
 	"github.com/google/trillian/client"
-	"github.com/google/trillian/crypto/keyspb"
-	"github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/monitoring"
 	"github.com/google/trillian/monitoring/prometheus"
 	"github.com/google/trillian/testonly/mdm"
 	"github.com/google/trillian/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
-
-	// Register key ProtoHandlers
-	_ "github.com/google/trillian/crypto/keys/der/proto"
-	_ "github.com/google/trillian/crypto/keys/pem/proto"
-
-	// Load hashers
-	_ "github.com/google/trillian/merkle/rfc6962"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 var (
@@ -97,24 +88,14 @@ func innerMain(ctx context.Context) error {
 		// No logID provided, so create an ephemeral tree to test against.
 		req := trillian.CreateTreeRequest{
 			Tree: &trillian.Tree{
-				TreeState:          trillian.TreeState_ACTIVE,
-				TreeType:           trillian.TreeType_LOG,
-				HashStrategy:       trillian.HashStrategy_RFC6962_SHA256,
-				HashAlgorithm:      sigpb.DigitallySigned_SHA256,
-				SignatureAlgorithm: sigpb.DigitallySigned_ECDSA,
-				DisplayName:        fmt.Sprintf("mdmtest-%d", time.Now().UnixNano()/int64(time.Second)),
-				Description:        "Transient tree for mdmtest",
-				MaxRootDuration:    ptypes.DurationProto(time.Second * 3600),
-			},
-			KeySpec: &keyspb.Specification{
-				Params: &keyspb.Specification_EcdsaParams{
-					EcdsaParams: &keyspb.Specification_ECDSA{
-						Curve: keyspb.Specification_ECDSA_P256,
-					},
-				},
+				TreeState:       trillian.TreeState_ACTIVE,
+				TreeType:        trillian.TreeType_LOG,
+				DisplayName:     fmt.Sprintf("mdmtest-%d", time.Now().UnixNano()/int64(time.Second)),
+				Description:     "Transient tree for mdmtest",
+				MaxRootDuration: durationpb.New(time.Second * 3600),
 			},
 		}
-		tree, err := client.CreateAndInitTree(ctx, &req, adminCl, nil, cl)
+		tree, err := client.CreateAndInitTree(ctx, &req, adminCl, cl)
 		if err != nil {
 			glog.Exitf("failed to create ephemeral tree: %v", err)
 		}

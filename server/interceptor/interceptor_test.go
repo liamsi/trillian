@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
 	"github.com/google/trillian/quota"
@@ -34,6 +32,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	serrors "github.com/google/trillian/server/errors"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
@@ -62,12 +62,10 @@ func TestServiceName(t *testing.T) {
 func TestTrillianInterceptor_TreeInterception(t *testing.T) {
 	logTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	logTree.TreeId = 10
-	mapTree := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	mapTree.TreeId = 11
 	deletedTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	deletedTree.TreeId = 12
 	deletedTree.Deleted = true
-	deletedTree.DeleteTime = ptypes.TimestampNow()
+	deletedTree.DeleteTime = timestamppb.Now()
 	unknownTreeID := int64(999)
 
 	tests := []struct {
@@ -101,12 +99,6 @@ func TestTrillianInterceptor_TreeInterception(t *testing.T) {
 			method:   "/trillian.TrillianLog/GetLatestSignedLogRoot",
 			req:      &trillian.GetLatestSignedLogRootRequest{LogId: logTree.TreeId},
 			wantTree: logTree,
-		},
-		{
-			desc:     "mapRPC",
-			method:   "/trillian.TrillianMap/GetSignedMapRoot",
-			req:      &trillian.GetSignedMapRootRequest{MapId: mapTree.TreeId},
-			wantTree: mapTree,
 		},
 		{
 			desc:    "unknownRequest",
@@ -143,7 +135,6 @@ func TestTrillianInterceptor_TreeInterception(t *testing.T) {
 			adminTX := storage.NewMockReadOnlyAdminTX(ctrl)
 			admin.EXPECT().Snapshot(gomock.Any()).AnyTimes().Return(adminTX, nil)
 			adminTX.EXPECT().GetTree(gomock.Any(), logTree.TreeId).AnyTimes().Return(logTree, nil)
-			adminTX.EXPECT().GetTree(gomock.Any(), mapTree.TreeId).AnyTimes().Return(mapTree, nil)
 			adminTX.EXPECT().GetTree(gomock.Any(), deletedTree.TreeId).AnyTimes().Return(deletedTree, nil)
 			adminTX.EXPECT().GetTree(gomock.Any(), unknownTreeID).AnyTimes().Return(nil, errors.New("not found"))
 			adminTX.EXPECT().Close().AnyTimes().Return(nil)
@@ -192,12 +183,8 @@ func TestTrillianInterceptor_TreeInterception(t *testing.T) {
 }
 
 func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
-
 	logTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	logTree.TreeId = 10
-
-	mapTree := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	mapTree.TreeId = 11
 
 	preorderedTree := proto.Clone(testonly.PreorderedLogTree).(*trillian.Tree)
 	preorderedTree.TreeId = 12
@@ -224,16 +211,6 @@ func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
 				{Group: quota.Global, Kind: quota.Read, Refundable: true},
 			},
 			wantTokens: 1,
-		},
-		{
-			desc:   "logReadIndices",
-			method: "/trillian.TrillianLog/GetLeavesByIndex",
-			req:    &trillian.GetLeavesByIndexRequest{LogId: logTree.TreeId, LeafIndex: []int64{1, 2, 3}},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Read, TreeID: logTree.TreeId},
-				{Group: quota.Global, Kind: quota.Read, Refundable: true},
-			},
-			wantTokens: 3,
 		},
 		{
 			desc:   "logReadRange",
@@ -300,37 +277,6 @@ func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
 			wantTokens: 1,
 		},
 		{
-			desc:   "mapRead",
-			method: "/trillian.TrillianMap/GetLeaves",
-			req:    &trillian.GetMapLeavesRequest{MapId: mapTree.TreeId, Index: [][]byte{{0x01}, {0x02}}},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Read, TreeID: mapTree.TreeId},
-				{Group: quota.Global, Kind: quota.Read, Refundable: true},
-			},
-			wantTokens: 2,
-		},
-		{
-			desc:   "emptyBatchRequest",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
-				LogId:  logTree.TreeId,
-				Leaves: nil,
-			},
-		},
-		{
-			desc:   "batchLogLeavesRequest",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
-				LogId:  logTree.TreeId,
-				Leaves: []*trillian.LogLeaf{{}, {}, {}},
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: logTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			wantTokens: 3,
-		},
-		{
 			desc:   "batchSequencedLogLeavesRequest",
 			method: "/trillian.TrillianLog/AddSequencedLeaves",
 			req: &trillian.AddSequencedLeavesRequest{
@@ -344,11 +290,11 @@ func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
 			wantTokens: 3,
 		},
 		{
-			desc:   "batchLogLeavesRequest with charges",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
+			desc:   "QueueLeafRequest with charges",
+			method: "/trillian.TrillianLog/QueueLeaf",
+			req: &trillian.QueueLeafRequest{
 				LogId:    logTree.TreeId,
-				Leaves:   []*trillian.LogLeaf{{}, {}, {}},
+				Leaf:     &trillian.LogLeaf{},
 				ChargeTo: charges,
 			},
 			specs: []quota.Spec{
@@ -357,33 +303,7 @@ func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
 				{Group: quota.Tree, Kind: quota.Write, TreeID: logTree.TreeId},
 				{Group: quota.Global, Kind: quota.Write, Refundable: true},
 			},
-			wantTokens: 3,
-		},
-		{
-			desc:   "batchMapLeavesRequest",
-			method: "/trillian.TrillianMap/SetLeaves",
-			req: &trillian.SetMapLeavesRequest{
-				MapId:  mapTree.TreeId,
-				Leaves: []*trillian.MapLeaf{{}, {}, {}, {}, {}},
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: mapTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			wantTokens: 5,
-		},
-		{
-			desc:   "batchWriteMapLeavesRequest",
-			method: "/trillian.TrillianMapWrite/WriteLeaves",
-			req: &trillian.WriteMapLeavesRequest{
-				MapId:  mapTree.TreeId,
-				Leaves: []*trillian.MapLeaf{{}, {}, {}, {}, {}},
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: mapTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			wantTokens: 5,
+			wantTokens: 1,
 		},
 		{
 			desc:   "quotaError",
@@ -420,7 +340,6 @@ func TestTrillianInterceptor_QuotaInterception(t *testing.T) {
 			adminTX := storage.NewMockReadOnlyAdminTX(ctrl)
 			admin.EXPECT().Snapshot(gomock.Any()).AnyTimes().Return(adminTX, nil)
 			adminTX.EXPECT().GetTree(gomock.Any(), logTree.TreeId).AnyTimes().Return(logTree, nil)
-			adminTX.EXPECT().GetTree(gomock.Any(), mapTree.TreeId).AnyTimes().Return(mapTree, nil)
 			adminTX.EXPECT().GetTree(gomock.Any(), preorderedTree.TreeId).AnyTimes().Return(preorderedTree, nil)
 			adminTX.EXPECT().Close().AnyTimes().Return(nil)
 			adminTX.EXPECT().Commit().AnyTimes().Return(nil)
@@ -495,58 +414,6 @@ func TestTrillianInterceptor_QuotaInterception_ReturnsTokens(t *testing.T) {
 			},
 			wantGetTokens: 1,
 			wantPutTokens: 1,
-		},
-		{
-			desc:   "newLeaves",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
-				LogId:  logTree.TreeId,
-				Leaves: []*trillian.LogLeaf{{}, {}, {}},
-			},
-			resp: &trillian.QueueLeavesResponse{
-				QueuedLeaves: []*trillian.QueuedLogLeaf{{}, {}, {}}, // No explicit Status means OK
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: logTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			wantGetTokens: 3,
-		},
-		{
-			desc:   "duplicateLeaves",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
-				LogId:  logTree.TreeId,
-				Leaves: []*trillian.LogLeaf{{}, {}, {}},
-			},
-			resp: &trillian.QueueLeavesResponse{
-				QueuedLeaves: []*trillian.QueuedLogLeaf{
-					{Status: status.New(codes.AlreadyExists, "duplicate leaf").Proto()},
-					{Status: status.New(codes.AlreadyExists, "duplicate leaf").Proto()},
-					{},
-				},
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: logTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			wantGetTokens: 3,
-			wantPutTokens: 2,
-		},
-		{
-			desc:   "badQueueLeavesRequest",
-			method: "/trillian.TrillianLog/QueueLeaves",
-			req: &trillian.QueueLeavesRequest{
-				LogId:  logTree.TreeId,
-				Leaves: []*trillian.LogLeaf{{}, {}, {}},
-			},
-			specs: []quota.Spec{
-				{Group: quota.Tree, Kind: quota.Write, TreeID: logTree.TreeId},
-				{Group: quota.Global, Kind: quota.Write, Refundable: true},
-			},
-			handlerErr:    errors.New("bad request"),
-			wantGetTokens: 3,
-			wantPutTokens: 3,
 		},
 	}
 

@@ -16,29 +16,18 @@ package trees
 
 import (
 	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
 	"errors"
-	"fmt"
-	"math/big"
 	"testing"
 
 	"github.com/golang/mock/gomock"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys"
-	"github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/testonly"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	tcrypto "github.com/google/trillian/crypto"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestFromContext(t *testing.T) {
@@ -68,9 +57,6 @@ func TestGetTree(t *testing.T) {
 	logTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	logTree.TreeId = 1
 
-	mapTree := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	mapTree.TreeId = 2
-
 	frozenTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	frozenTree.TreeId = 3
 	frozenTree.TreeState = trillian.TreeState_FROZEN
@@ -81,7 +67,7 @@ func TestGetTree(t *testing.T) {
 
 	softDeletedTree := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	softDeletedTree.Deleted = true
-	softDeletedTree.DeleteTime = ptypes.TimestampNow()
+	softDeletedTree.DeleteTime = timestamppb.Now()
 
 	tests := []struct {
 		desc                           string
@@ -107,47 +93,17 @@ func TestGetTree(t *testing.T) {
 			wantTree:    logTree,
 		},
 		{
-			desc:        "mapTree",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_MAP),
-			storageTree: mapTree,
-			wantTree:    mapTree,
-		},
-		{
-			desc:        "logTreeButMaybeMap",
+			desc:        "logTreeButMaybePreordered",
 			treeID:      logTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_LOG, trillian.TreeType_MAP),
+			opts:        NewGetOpts(Query, trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG),
 			storageTree: logTree,
 			wantTree:    logTree,
 		},
 		{
-			desc:        "mapTreeButMaybeLog",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_LOG, trillian.TreeType_MAP),
-			storageTree: mapTree,
-			wantTree:    mapTree,
-		},
-		{
 			desc:        "wrongType1",
 			treeID:      logTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_MAP),
+			opts:        NewGetOpts(Query, trillian.TreeType_PREORDERED_LOG),
 			storageTree: logTree,
-			wantErr:     true,
-			code:        codes.InvalidArgument,
-		},
-		{
-			desc:        "wrongType2",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_LOG),
-			storageTree: mapTree,
-			wantErr:     true,
-			code:        codes.InvalidArgument,
-		},
-		{
-			desc:        "wrongType3",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG),
-			storageTree: mapTree,
 			wantErr:     true,
 			code:        codes.InvalidArgument,
 		},
@@ -173,13 +129,6 @@ func TestGetTree(t *testing.T) {
 			wantTree:    frozenTree,
 		},
 		{
-			desc:        "adminMap",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Admin, trillian.TreeType_MAP),
-			storageTree: mapTree,
-			wantTree:    mapTree,
-		},
-		{
 			desc:        "queryLog",
 			treeID:      logTree.TreeId,
 			opts:        NewGetOpts(Query, trillian.TreeType_LOG),
@@ -192,13 +141,6 @@ func TestGetTree(t *testing.T) {
 			opts:        NewGetOpts(Query, trillian.TreeType_PREORDERED_LOG),
 			storageTree: testonly.PreorderedLogTree,
 			wantTree:    testonly.PreorderedLogTree,
-		},
-		{
-			desc:        "queryMap",
-			treeID:      mapTree.TreeId,
-			opts:        NewGetOpts(Query, trillian.TreeType_MAP),
-			storageTree: mapTree,
-			wantTree:    mapTree,
 		},
 		{
 			desc:        "queryFrozen",
@@ -267,7 +209,7 @@ func TestGetTree(t *testing.T) {
 			desc:        "wrongTreeInCtx",
 			treeID:      logTree.TreeId,
 			opts:        NewGetOpts(Query, trillian.TreeType_LOG),
-			ctxTree:     mapTree,
+			ctxTree:     frozenTree,
 			storageTree: logTree,
 			wantTree:    logTree,
 			wantErr:     true,
@@ -327,125 +269,5 @@ func TestGetTree(t *testing.T) {
 			diff := cmp.Diff(tree, test.wantTree)
 			t.Errorf("%v: post-GetTree diff:\n%v", test.desc, diff)
 		}
-	}
-}
-
-func TestHash(t *testing.T) {
-	tests := []struct {
-		hashAlgo sigpb.DigitallySigned_HashAlgorithm
-		wantHash crypto.Hash
-		wantErr  bool
-	}{
-		{hashAlgo: sigpb.DigitallySigned_NONE, wantErr: true},
-		{hashAlgo: sigpb.DigitallySigned_SHA256, wantHash: crypto.SHA256},
-	}
-
-	for _, test := range tests {
-		tree := proto.Clone(testonly.LogTree).(*trillian.Tree)
-		tree.HashAlgorithm = test.hashAlgo
-
-		hash, err := Hash(tree)
-		if hasErr := err != nil; hasErr != test.wantErr {
-			t.Errorf("Hash(%s) = (_, %q), wantErr = %v", test.hashAlgo, err, test.wantErr)
-			continue
-		} else if hasErr {
-			continue
-		}
-
-		if hash != test.wantHash {
-			t.Errorf("Hash(%s) = (%v, nil), want = (%v, nil)", test.hashAlgo, hash, test.wantHash)
-		}
-	}
-}
-
-func TestSigner(t *testing.T) {
-	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("Error generating test ECDSA key: %v", err)
-	}
-
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("Error generating test RSA key: %v", err)
-	}
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	tests := []struct {
-		desc         string
-		sigAlgo      sigpb.DigitallySigned_SignatureAlgorithm
-		signer       crypto.Signer
-		newSignerErr error
-		wantErr      bool
-	}{
-		{
-			desc:    "anonymous",
-			sigAlgo: sigpb.DigitallySigned_ANONYMOUS,
-			wantErr: true,
-		},
-		{
-			desc:    "ecdsa",
-			sigAlgo: sigpb.DigitallySigned_ECDSA,
-			signer:  ecdsaKey,
-		},
-		{
-			desc:    "rsa",
-			sigAlgo: sigpb.DigitallySigned_RSA,
-			signer:  rsaKey,
-		},
-		{
-			desc:    "keyMismatch1",
-			sigAlgo: sigpb.DigitallySigned_ECDSA,
-			signer:  rsaKey,
-			wantErr: true,
-		},
-		{
-			desc:    "keyMismatch2",
-			sigAlgo: sigpb.DigitallySigned_RSA,
-			signer:  ecdsaKey,
-			wantErr: true,
-		},
-		{
-			desc:         "newSignerErr",
-			sigAlgo:      sigpb.DigitallySigned_ECDSA,
-			newSignerErr: errors.New("NewSigner() error"),
-			wantErr:      true,
-		},
-	}
-
-	ctx := context.Background()
-	for _, test := range tests {
-		t.Run(test.desc, func(t *testing.T) {
-			tree := proto.Clone(testonly.LogTree).(*trillian.Tree)
-			tree.HashAlgorithm = sigpb.DigitallySigned_SHA256
-			tree.HashStrategy = trillian.HashStrategy_RFC6962_SHA256
-			tree.SignatureAlgorithm = test.sigAlgo
-
-			var wantKeyProto ptypes.DynamicAny
-			if err := ptypes.UnmarshalAny(tree.PrivateKey, &wantKeyProto); err != nil {
-				t.Fatalf("failed to unmarshal tree.PrivateKey: %v", err)
-			}
-
-			keys.RegisterHandler(wantKeyProto.Message, func(ctx context.Context, gotKeyProto proto.Message) (crypto.Signer, error) {
-				if !proto.Equal(gotKeyProto, wantKeyProto.Message) {
-					return nil, fmt.Errorf("NewSigner(_, %#v) called, want NewSigner(_, %#v)", gotKeyProto, wantKeyProto.Message)
-				}
-				return test.signer, test.newSignerErr
-			})
-			defer keys.UnregisterHandler(wantKeyProto.Message)
-
-			signer, err := Signer(ctx, tree)
-			if hasErr := err != nil; hasErr != test.wantErr {
-				t.Fatalf("Signer(_, %s) = (_, %q), wantErr = %v", test.sigAlgo, err, test.wantErr)
-			} else if hasErr {
-				return
-			}
-
-			want := tcrypto.NewSigner(0, test.signer, crypto.SHA256)
-			if diff := cmp.Diff(signer, want, cmp.Comparer(func(a, b *big.Int) bool { return a.Cmp(b) == 0 })); diff != "" {
-				t.Fatalf("post-Signer(_, %s) diff:\n%v", test.sigAlgo, diff)
-			}
-		})
 	}
 }

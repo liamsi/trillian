@@ -21,25 +21,25 @@ import (
 
 	"github.com/google/trillian/quota"
 	"github.com/google/trillian/quota/etcd/storage"
-	"go.etcd.io/etcd/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type manager struct {
+// Manager implements a quota manager based on etcd.
+type Manager struct {
 	qs *storage.QuotaStorage
 }
 
 // New returns a new etcd-based quota.Manager.
-func New(client *clientv3.Client) quota.Manager {
-	return &manager{qs: &storage.QuotaStorage{Client: client}}
+func New(client *clientv3.Client) *Manager {
+	return &Manager{qs: &storage.QuotaStorage{Client: client}}
 }
 
 // GetTokens implements the quota.Manager API.
-func (m *manager) GetTokens(ctx context.Context, numTokens int, specs []quota.Spec) error {
+func (m *Manager) GetTokens(ctx context.Context, numTokens int, specs []quota.Spec) error {
 	return m.qs.Get(ctx, configNames(specs), int64(numTokens))
 }
 
-// PeekTokens implements the quota.Manager API.
-func (m *manager) PeekTokens(ctx context.Context, specs []quota.Spec) (map[quota.Spec]int, error) {
+func (m *Manager) peekTokens(ctx context.Context, specs []quota.Spec) (map[quota.Spec]int, error) {
 	names := configNames(specs)
 	nameToSpec := make(map[string]quota.Spec)
 	for i, name := range names {
@@ -59,12 +59,12 @@ func (m *manager) PeekTokens(ctx context.Context, specs []quota.Spec) (map[quota
 }
 
 // PutTokens implements the quota.Manager API.
-func (m *manager) PutTokens(ctx context.Context, numTokens int, specs []quota.Spec) error {
+func (m *Manager) PutTokens(ctx context.Context, numTokens int, specs []quota.Spec) error {
 	return m.qs.Put(ctx, configNames(specs), int64(numTokens))
 }
 
 // ResetQuota implements the quota.Manager API.
-func (m *manager) ResetQuota(ctx context.Context, specs []quota.Spec) error {
+func (m *Manager) ResetQuota(ctx context.Context, specs []quota.Spec) error {
 	return m.qs.Reset(ctx, configNames(specs))
 }
 

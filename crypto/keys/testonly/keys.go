@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package testonly contains code and data that should only be used by tests.
+// Production code MUST NOT depend on anything in this package. This will be
+// enforced by tools where possible.
 package testonly
 
 import (
@@ -22,41 +25,24 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 
-	"github.com/google/trillian/crypto/keys"
-	"github.com/google/trillian/crypto/keys/der"
-	"github.com/google/trillian/crypto/keys/pem"
-	"github.com/google/trillian/crypto/keyspb"
 	"golang.org/x/crypto/ed25519"
 )
 
 // MustMarshalPublicPEMToDER reads a PEM-encoded public key and returns it in DER encoding.
 // If an error occurs, it panics.
 func MustMarshalPublicPEMToDER(keyPEM string) []byte {
-	key, err := pem.UnmarshalPublicKey(keyPEM)
+	block, _ := pem.Decode([]byte(keyPEM))
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		panic(err)
 	}
 
 	keyDER, err := x509.MarshalPKIXPublicKey(key)
-	if err != nil {
-		panic(err)
-	}
-	return keyDER
-}
-
-// MustMarshalPrivatePEMToDER decrypts a PEM-encoded private key and returns it in DER encoding.
-// If an error occurs, it panics.
-func MustMarshalPrivatePEMToDER(keyPEM, password string) []byte {
-	key, err := pem.UnmarshalPrivateKey(keyPEM, password)
-	if err != nil {
-		panic(err)
-	}
-
-	keyDER, err := der.MarshalPrivateKey(key)
 	if err != nil {
 		panic(err)
 	}
@@ -125,51 +111,5 @@ func verifyEd25519(pubKey ed25519.PublicKey, digest, sig []byte) error {
 	if !ed25519.Verify(pubKey, digest, sig) {
 		return errors.New("ed25519 signature failed verification")
 	}
-	return nil
-}
-
-// CheckKeyMatchesSpec verifies that the key conforms to the specification.
-// If it does not, an error is returned.
-func CheckKeyMatchesSpec(key crypto.PrivateKey, spec *keyspb.Specification) error {
-	switch params := spec.Params.(type) {
-	case *keyspb.Specification_EcdsaParams:
-		if key, ok := key.(*ecdsa.PrivateKey); ok {
-			return checkEcdsaKeyMatchesParams(key, params.EcdsaParams)
-		}
-		return fmt.Errorf("%T, want *ecdsa.PrivateKey", key)
-	case *keyspb.Specification_RsaParams:
-		if key, ok := key.(*rsa.PrivateKey); ok {
-			return checkRsaKeyMatchesParams(key, params.RsaParams)
-		}
-		return fmt.Errorf("%T, want *rsa.PrivateKey", key)
-	case *keyspb.Specification_Ed25519Params:
-		if _, ok := key.(ed25519.PrivateKey); ok {
-			return nil
-		}
-		return fmt.Errorf("%T, want *ed25519.PrivateKey", key)
-	}
-
-	return fmt.Errorf("%T is not a supported keyspb.Specification.Params type", spec.Params)
-}
-
-func checkEcdsaKeyMatchesParams(key *ecdsa.PrivateKey, params *keyspb.Specification_ECDSA) error {
-	wantCurve := keys.ECDSACurveFromParams(params)
-	if wantCurve.Params().Name != key.Params().Name {
-		return fmt.Errorf("ECDSA key on %v curve, want %v curve", key.Params().Name, wantCurve.Params().Name)
-	}
-
-	return nil
-}
-
-func checkRsaKeyMatchesParams(key *rsa.PrivateKey, params *keyspb.Specification_RSA) error {
-	wantBits := keys.DefaultRsaKeySizeInBits
-	if params.GetBits() != 0 {
-		wantBits = int(params.GetBits())
-	}
-
-	if got, want := key.N.BitLen(), wantBits; got != want {
-		return fmt.Errorf("%v-bit RSA key, want %v-bit", got, want)
-	}
-
 	return nil
 }

@@ -1,3 +1,5 @@
+// +build integration
+
 // Copyright 2017 Google LLC. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,10 +55,8 @@ const (
 	TTL = 60
 )
 
-var (
-	// The base time as a `time.Time` object
-	TestBaseTime = time.Unix(TestBaseTimeSec, TestBaseTimeUs*int64(time.Microsecond/time.Nanosecond))
-)
+// The base time as a `time.Time` object
+var TestBaseTime = time.Unix(TestBaseTimeSec, TestBaseTimeUs*int64(time.Microsecond/time.Nanosecond))
 
 // This test is an end-to-end integration test for the Redis token-bucket
 // implementation. It exercises the actual implementation of the token bucket;

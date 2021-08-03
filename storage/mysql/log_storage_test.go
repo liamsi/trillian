@@ -17,7 +17,6 @@ package mysql
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
@@ -25,31 +24,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
 	"github.com/google/trillian/integration/storagetest"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/testonly"
 	"github.com/google/trillian/types"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
-	tcrypto "github.com/google/trillian/crypto"
-	ttestonly "github.com/google/trillian/testonly"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-var allTables = []string{"Unsequenced", "TreeHead", "SequencedLeafData", "LeafData", "Subtree", "TreeControl", "Trees", "MapLeaf", "MapHead"}
+var allTables = []string{"Unsequenced", "TreeHead", "SequencedLeafData", "LeafData", "Subtree", "TreeControl", "Trees"}
 
 // Must be 32 bytes to match sha256 length if it was a real hash
-var dummyHash = []byte("hashxxxxhashxxxxhashxxxxhashxxxx")
-var dummyRawHash = []byte("xxxxhashxxxxhashxxxxhashxxxxhash")
-var dummyRawHash2 = []byte("yyyyhashyyyyhashyyyyhashyyyyhash")
-var dummyHash2 = []byte("HASHxxxxhashxxxxhashxxxxhashxxxx")
-var dummyHash3 = []byte("hashxxxxhashxxxxhashxxxxHASHxxxx")
+var (
+	dummyHash    = []byte("hashxxxxhashxxxxhashxxxxhashxxxx")
+	dummyRawHash = []byte("xxxxhashxxxxhashxxxxhashxxxxhash")
+	dummyHash2   = []byte("HASHxxxxhashxxxxhashxxxxhashxxxx")
+)
 
 // Time we will queue all leaves at
 var fakeQueueTime = time.Date(2016, 11, 10, 15, 16, 27, 0, time.UTC)
@@ -62,10 +56,11 @@ var fakeDequeueCutoffTime = time.Date(2016, 11, 10, 15, 16, 30, 0, time.UTC)
 
 // Used for tests involving extra data
 var someExtraData = []byte("Some extra data")
-var someExtraData2 = []byte("Some even more extra data")
 
-const leavesToInsert = 5
-const sequenceNumber int64 = 237
+const (
+	leavesToInsert       = 5
+	sequenceNumber int64 = 237
+)
 
 // Tests that access the db should each use a distinct log ID to prevent lock contention when
 // run in parallel or race conditions / unexpected interactions. Tests that pass should hold
@@ -81,14 +76,8 @@ func createFakeLeaf(ctx context.Context, db *sql.DB, logID int64, rawHash, hash,
 	if err != nil || err2 != nil {
 		t.Fatalf("Failed to create test leaves: %v %v", err, err2)
 	}
-	queueTimestamp, err := ptypes.TimestampProto(fakeQueueTime)
-	if err != nil {
-		panic(err)
-	}
-	integrateTimestamp, err := ptypes.TimestampProto(fakeIntegrateTime)
-	if err != nil {
-		panic(err)
-	}
+	queueTimestamp := timestamppb.New(fakeQueueTime)
+	integrateTimestamp := timestamppb.New(fakeIntegrateTime)
 	return &trillian.LogLeaf{
 		MerkleLeafHash:     hash,
 		LeafValue:          data,
@@ -122,10 +111,7 @@ func checkLeafContents(leaf *trillian.LogLeaf, seq int64, rawHash, hash, data, e
 		t.Fatalf("Unxpected data in returned leaf. got:\n%v\nwant:\n%v", got, want)
 	}
 
-	iTime, err := ptypes.Timestamp(leaf.IntegrateTimestamp)
-	if err != nil {
-		t.Fatalf("Got invalid integrate timestamp: %v", err)
-	}
+	iTime := leaf.IntegrateTimestamp.AsTime()
 	if got, want := iTime.UnixNano(), fakeIntegrateTime.UnixNano(); got != want {
 		t.Errorf("Wrong IntegrateTimestamp: got %v, want %v", got, want)
 	}
@@ -154,7 +140,7 @@ func TestQueueDuplicateLeaf(t *testing.T) {
 	leaves3 := createTestLeaves(3, 100)
 
 	// Note that tests accumulate queued leaves on top of each other.
-	var tests = []struct {
+	tests := []struct {
 		desc   string
 		leaves []*trillian.LogLeaf
 		want   []*trillian.LogLeaf
@@ -380,7 +366,7 @@ func TestDequeueLeavesTimeOrdering(t *testing.T) {
 			if !leafInBatch(dequeue1[0], leaves2) || !leafInBatch(dequeue1[1], leaves2) {
 				t.Fatalf("Got leaf from wrong batch (1st dequeue): %v", dequeue1)
 			}
-			iTimestamp := ptypes.TimestampNow()
+			iTimestamp := timestamppb.Now()
 			for i, l := range dequeue1 {
 				l.IntegrateTimestamp = iTimestamp
 				l.LeafIndex = int64(i)
@@ -505,7 +491,7 @@ func TestGetLeafDataByIdentityHash(t *testing.T) {
 	leaf2.LeafIndex = -1
 	leaf2.MerkleLeafHash = []byte(dummyMerkleLeafHash)
 
-	var tests = []struct {
+	tests := []struct {
 		hashes [][]byte
 		want   []*trillian.LogLeaf
 	}{
@@ -562,105 +548,6 @@ func leavesEquivalent(t *testing.T, gotLeaves, wantLeaves []*trillian.LogLeaf) {
 	}
 }
 
-func TestGetLeavesByIndex(t *testing.T) {
-	ctx := context.Background()
-
-	// Create fake leaf as if it had been sequenced, read it back and check contents
-	cleanTestDB(DB)
-	as := NewAdminStorage(DB)
-	tree := mustCreateTree(ctx, t, as, testonly.LogTree)
-	s := NewLogStorage(DB, nil)
-
-	// The leaf indices are checked against the tree size so we need a root.
-	mustSignAndStoreLogRoot(ctx, t, s, tree, uint64(sequenceNumber+1))
-
-	data := []byte("some data")
-	data2 := []byte("some other data")
-	createFakeLeaf(ctx, DB, tree.TreeId, dummyRawHash, dummyHash, data, someExtraData, sequenceNumber, t)
-	createFakeLeaf(ctx, DB, tree.TreeId, dummyRawHash2, dummyHash2, data2, someExtraData2, sequenceNumber-1, t)
-
-	var tests = []struct {
-		desc     string
-		indices  []int64
-		wantErr  bool
-		wantCode codes.Code
-		checkFn  func([]*trillian.LogLeaf, *testing.T)
-	}{
-		{
-			desc:    "InTree",
-			indices: []int64{sequenceNumber},
-			checkFn: func(leaves []*trillian.LogLeaf, t *testing.T) {
-				checkLeafContents(leaves[0], sequenceNumber, dummyRawHash, dummyHash, data, someExtraData, t)
-			},
-		},
-		{
-			desc:    "InTree2",
-			indices: []int64{sequenceNumber - 1},
-			wantErr: false,
-			checkFn: func(leaves []*trillian.LogLeaf, t *testing.T) {
-				checkLeafContents(leaves[0], sequenceNumber, dummyRawHash2, dummyHash2, data2, someExtraData2, t)
-			},
-		},
-		{
-			desc:    "InTreeMultiple",
-			indices: []int64{sequenceNumber - 1, sequenceNumber},
-			checkFn: func(leaves []*trillian.LogLeaf, t *testing.T) {
-				checkLeafContents(leaves[1], sequenceNumber, dummyRawHash, dummyHash, data, someExtraData, t)
-				checkLeafContents(leaves[0], sequenceNumber, dummyRawHash2, dummyHash2, data2, someExtraData2, t)
-			},
-		},
-		{
-			desc:    "InTreeMultipleReverse",
-			indices: []int64{sequenceNumber, sequenceNumber - 1},
-			checkFn: func(leaves []*trillian.LogLeaf, t *testing.T) {
-				checkLeafContents(leaves[0], sequenceNumber, dummyRawHash, dummyHash, data, someExtraData, t)
-				checkLeafContents(leaves[1], sequenceNumber, dummyRawHash2, dummyHash2, data2, someExtraData2, t)
-			},
-		}, {
-			desc:     "OutsideTree",
-			indices:  []int64{sequenceNumber + 1},
-			wantErr:  true,
-			wantCode: codes.OutOfRange,
-		},
-		{
-			desc:     "LongWayOutsideTree",
-			indices:  []int64{9999},
-			wantErr:  true,
-			wantCode: codes.OutOfRange,
-		},
-		{
-			desc:     "MixedInOutTree",
-			indices:  []int64{sequenceNumber, sequenceNumber + 1},
-			wantErr:  true,
-			wantCode: codes.OutOfRange,
-		},
-		{
-			desc:     "MixedInOutTree2",
-			indices:  []int64{sequenceNumber - 1, sequenceNumber + 1},
-			wantErr:  true,
-			wantCode: codes.OutOfRange,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.desc, func(t *testing.T) {
-			runLogTX(s, tree, t, func(ctx context.Context, tx storage.LogTreeTX) error {
-				got, err := tx.GetLeavesByIndex(ctx, test.indices)
-				if test.wantErr {
-					if err == nil || status.Code(err) != test.wantCode {
-						t.Errorf("GetLeavesByIndex(%v)=%v,%v; want: nil, err with code %v", test.indices, got, err, test.wantCode)
-					}
-				} else {
-					if err != nil {
-						t.Errorf("GetLeavesByIndex(%v)=%v,%v; want: got, nil", test.indices, got, err)
-					}
-				}
-				return nil
-			})
-		})
-	}
-}
-
 // -----------------------------------------------------------------------------
 
 func TestLatestSignedRootNoneWritten(t *testing.T) {
@@ -678,6 +565,14 @@ func TestLatestSignedRootNoneWritten(t *testing.T) {
 	commit(ctx, tx, t)
 }
 
+func SignLogRoot(root *types.LogRootV1) (*trillian.SignedLogRoot, error) {
+	logRoot, err := root.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	return &trillian.SignedLogRoot{LogRoot: logRoot}, nil
+}
+
 func TestLatestSignedLogRoot(t *testing.T) {
 	ctx := context.Background()
 	cleanTestDB(DB)
@@ -685,11 +580,9 @@ func TestLatestSignedLogRoot(t *testing.T) {
 	tree := mustCreateTree(ctx, t, as, testonly.LogTree)
 	s := NewLogStorage(DB, nil)
 
-	signer := tcrypto.NewSigner(tree.TreeId, ttestonly.NewSignerWithFixedSig(nil, []byte("notempty")), crypto.SHA256)
-	root, err := signer.SignLogRoot(&types.LogRootV1{
+	root, err := SignLogRoot(&types.LogRootV1{
 		TimestampNanos: 98765,
 		TreeSize:       16,
-		Revision:       0,
 		RootHash:       []byte(dummyHash),
 	})
 	if err != nil {
@@ -724,11 +617,9 @@ func TestDuplicateSignedLogRoot(t *testing.T) {
 	tree := mustCreateTree(ctx, t, as, testonly.LogTree)
 	s := NewLogStorage(DB, nil)
 
-	signer := tcrypto.NewSigner(tree.TreeId, ttestonly.NewSignerWithFixedSig(nil, []byte("notempty")), crypto.SHA256)
-	root, err := signer.SignLogRoot(&types.LogRootV1{
+	root, err := SignLogRoot(&types.LogRootV1{
 		TimestampNanos: 98765,
 		TreeSize:       16,
-		Revision:       0,
 		RootHash:       []byte(dummyHash),
 	})
 	if err != nil {
@@ -755,20 +646,17 @@ func TestLogRootUpdate(t *testing.T) {
 	tree := mustCreateTree(ctx, t, as, testonly.LogTree)
 	s := NewLogStorage(DB, nil)
 
-	signer := tcrypto.NewSigner(tree.TreeId, ttestonly.NewSignerWithFixedSig(nil, []byte("notempty")), crypto.SHA256)
-	root, err := signer.SignLogRoot(&types.LogRootV1{
+	root, err := SignLogRoot(&types.LogRootV1{
 		TimestampNanos: 98765,
 		TreeSize:       16,
-		Revision:       0,
 		RootHash:       []byte(dummyHash),
 	})
 	if err != nil {
 		t.Fatalf("SignLogRoot(): %v", err)
 	}
-	root2, err := signer.SignLogRoot(&types.LogRootV1{
+	root2, err := SignLogRoot(&types.LogRootV1{
 		TimestampNanos: 98766,
 		TreeSize:       16,
-		Revision:       1,
 		RootHash:       []byte(dummyHash),
 	})
 	if err != nil {
@@ -807,10 +695,7 @@ func TestGetActiveLogIDs(t *testing.T) {
 	drainingLog := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	frozenLog := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	deletedLog := proto.Clone(testonly.LogTree).(*trillian.Tree)
-	map1 := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	map2 := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	deletedMap := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	for _, tree := range []**trillian.Tree{&log1, &log2, &log3, &drainingLog, &frozenLog, &deletedLog, &map1, &map2, &deletedMap} {
+	for _, tree := range []**trillian.Tree{&log1, &log2, &log3, &drainingLog, &frozenLog, &deletedLog} {
 		newTree, err := storage.CreateTree(ctx, admin, *tree)
 		if err != nil {
 			t.Fatalf("CreateTree(%+v) returned err = %v", tree, err)
@@ -837,24 +722,16 @@ func TestGetActiveLogIDs(t *testing.T) {
 		t.Fatalf("PrepareContext() returned err = %v", err)
 	}
 	defer updateDeletedStmt.Close()
-	for _, treeID := range []int64{deletedLog.TreeId, deletedMap.TreeId} {
+	for _, treeID := range []int64{deletedLog.TreeId} {
 		if _, err := updateDeletedStmt.ExecContext(ctx, true, treeID); err != nil {
 			t.Fatalf("ExecContext(%v) returned err = %v", treeID, err)
 		}
 	}
 
 	s := NewLogStorage(DB, nil)
-	tx, err := s.Snapshot(ctx)
-	if err != nil {
-		t.Fatalf("Snapshot() returns err = %v", err)
-	}
-	defer tx.Close()
-	got, err := tx.GetActiveLogIDs(ctx)
+	got, err := s.GetActiveLogIDs(ctx)
 	if err != nil {
 		t.Fatalf("GetActiveLogIDs() returns err = %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Errorf("Commit() returned err = %v", err)
 	}
 
 	want := []int64{log1.TreeId, log2.TreeId, log3.TreeId, drainingLog.TreeId}
@@ -871,86 +748,14 @@ func TestGetActiveLogIDsEmpty(t *testing.T) {
 	cleanTestDB(DB)
 	s := NewLogStorage(DB, nil)
 
-	tx, err := s.Snapshot(context.Background())
-	if err != nil {
-		t.Fatalf("Snapshot() = (_, %v), want = (_, nil)", err)
-	}
-	defer tx.Close()
-	ids, err := tx.GetActiveLogIDs(ctx)
+	ids, err := s.GetActiveLogIDs(ctx)
 	if err != nil {
 		t.Fatalf("GetActiveLogIDs() = (_, %v), want = (_, nil)", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Errorf("Commit() = %v, want = nil", err)
 	}
 
 	if got, want := len(ids), 0; got != want {
 		t.Errorf("GetActiveLogIDs(): got %v IDs, want = %v", got, want)
 	}
-}
-
-func TestReadOnlyLogTX_Rollback(t *testing.T) {
-	ctx := context.Background()
-	cleanTestDB(DB)
-	s := NewLogStorage(DB, nil)
-	tx, err := s.Snapshot(ctx)
-	if err != nil {
-		t.Fatalf("Snapshot() = (_, %v), want = (_, nil)", err)
-	}
-	defer tx.Close()
-	if _, err := tx.GetActiveLogIDs(ctx); err != nil {
-		t.Fatalf("GetActiveLogIDs() = (_, %v), want = (_, nil)", err)
-	}
-	// It's a bit hard to have a more meaningful test. This should suffice.
-	if err := tx.Rollback(); err != nil {
-		t.Errorf("Rollback() = (_, %v), want = (_, nil)", err)
-	}
-}
-
-func TestGetSequencedLeafCount(t *testing.T) {
-	ctx := context.Background()
-
-	// We'll create leaves for two different trees
-	cleanTestDB(DB)
-	as := NewAdminStorage(DB)
-	log1 := mustCreateTree(ctx, t, as, testonly.LogTree)
-	log2 := mustCreateTree(ctx, t, as, testonly.LogTree)
-	s := NewLogStorage(DB, nil)
-
-	{
-		// Create fake leaf as if it had been sequenced
-		data := []byte("some data")
-		createFakeLeaf(ctx, DB, log1.TreeId, dummyHash, dummyRawHash, data, someExtraData, sequenceNumber, t)
-
-		// Create fake leaves for second tree as if they had been sequenced
-		data2 := []byte("some data 2")
-		data3 := []byte("some data 3")
-		createFakeLeaf(ctx, DB, log2.TreeId, dummyHash2, dummyRawHash, data2, someExtraData, sequenceNumber, t)
-		createFakeLeaf(ctx, DB, log2.TreeId, dummyHash3, dummyRawHash, data3, someExtraData, sequenceNumber+1, t)
-	}
-
-	// Read back the leaf counts from both trees
-	runLogTX(s, log1, t, func(ctx context.Context, tx storage.LogTreeTX) error {
-		count1, err := tx.GetSequencedLeafCount(ctx)
-		if err != nil {
-			t.Fatalf("unexpected error getting leaf count: %v", err)
-		}
-		if want, got := int64(1), count1; want != got {
-			t.Fatalf("expected %d sequenced for logId but got %d", want, got)
-		}
-		return nil
-	})
-
-	runLogTX(s, log2, t, func(ctx context.Context, tx storage.LogTreeTX) error {
-		count2, err := tx.GetSequencedLeafCount(ctx)
-		if err != nil {
-			t.Fatalf("unexpected error getting leaf count2: %v", err)
-		}
-		if want, got := int64(2), count2; want != got {
-			t.Fatalf("expected %d sequenced for logId2 but got %d", want, got)
-		}
-		return nil
-	})
 }
 
 func ensureAllLeavesDistinct(leaves []*trillian.LogLeaf, t *testing.T) {
@@ -971,10 +776,7 @@ func ensureAllLeavesDistinct(leaves []*trillian.LogLeaf, t *testing.T) {
 func ensureLeavesHaveQueueTimestamp(t *testing.T, leaves []*trillian.LogLeaf, want time.Time) {
 	t.Helper()
 	for _, leaf := range leaves {
-		gotQTimestamp, err := ptypes.Timestamp(leaf.QueueTimestamp)
-		if err != nil {
-			t.Fatalf("Got invalid queue timestamp: %v", err)
-		}
+		gotQTimestamp := leaf.QueueTimestamp.AsTime()
 		if got, want := gotQTimestamp.UnixNano(), want.UnixNano(); got != want {
 			t.Errorf("Got leaf with QueueTimestampNanos = %v, want %v: %v", got, want, leaf)
 		}

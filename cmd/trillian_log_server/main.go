@@ -19,18 +19,17 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	_ "net/http/pprof" // Register pprof HTTP handlers.
 	"os"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"github.com/google/trillian"
 	"github.com/google/trillian/cmd"
 	"github.com/google/trillian/cmd/internal/serverutil"
-	"github.com/google/trillian/crypto/keys/der"
-	"github.com/google/trillian/crypto/keyspb"
 	"github.com/google/trillian/extension"
 	"github.com/google/trillian/monitoring"
 	"github.com/google/trillian/monitoring/opencensus"
@@ -42,20 +41,12 @@ import (
 	"github.com/google/trillian/server"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/util/clock"
-	etcdutil "github.com/google/trillian/util/etcd"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
-
-	// Register key ProtoHandlers
-	_ "github.com/google/trillian/crypto/keys/der/proto"
-	_ "github.com/google/trillian/crypto/keys/pem/proto"
-	_ "github.com/google/trillian/crypto/keys/pkcs11/proto"
 
 	// Register supported storage providers.
 	_ "github.com/google/trillian/storage/cloudspanner"
 	_ "github.com/google/trillian/storage/mysql"
-
-	// Load hashers
-	_ "github.com/google/trillian/merkle/rfc6962"
 
 	// Load MySQL quota provider
 	_ "github.com/google/trillian/quota/mysqlqm"
@@ -70,7 +61,10 @@ var (
 	etcdService     = flag.String("etcd_service", "trillian-logserver", "Service name to announce ourselves under")
 	etcdHTTPService = flag.String("etcd_http_service", "trillian-logserver-http", "Service name to announce our HTTP endpoint under")
 
+	quotaSystem = flag.String("quota_system", "mysql", fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
 	quotaDryRun = flag.Bool("quota_dry_run", false, "If true no requests are blocked due to lack of tokens")
+
+	storageSystem = flag.String("storage_system", "mysql", fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
 
 	treeGCEnabled            = flag.Bool("tree_gc", true, "If true, tree garbage collection (hard-deletion) is periodically performed")
 	treeDeleteThreshold      = flag.Duration("tree_delete_threshold", serverutil.DefaultTreeDeleteThreshold, "Minimum period a tree has to remain deleted before being hard-deleted")
@@ -112,15 +106,21 @@ func main() {
 		options = append(options, opts...)
 	}
 
-	sp, err := storage.NewProviderFromFlags(mf)
+	sp, err := storage.NewProvider(*storageSystem, mf)
 	if err != nil {
 		glog.Exitf("Failed to get storage provider: %v", err)
 	}
 	defer sp.Close()
 
-	client, err := etcdutil.NewClientFromString(*etcd.Servers)
-	if err != nil {
-		glog.Exitf("Failed to connect to etcd at %v: %v", *etcd.Servers, err)
+	var client *clientv3.Client
+	if servers := *etcd.Servers; servers != "" {
+		if client, err = clientv3.New(clientv3.Config{
+			Endpoints:   strings.Split(servers, ","),
+			DialTimeout: 5 * time.Second,
+		}); err != nil {
+			glog.Exitf("Failed to connect to etcd at %v: %v", servers, err)
+		}
+		defer client.Close()
 	}
 
 	// Announce our endpoints to etcd if so configured.
@@ -131,7 +131,7 @@ func main() {
 		defer unannounceHTTP()
 	}
 
-	qm, err := quota.NewManagerFromFlags()
+	qm, err := quota.NewManager(*quotaSystem)
 	if err != nil {
 		glog.Exitf("Error creating quota manager: %v", err)
 	}
@@ -141,9 +141,6 @@ func main() {
 		LogStorage:    sp.LogStorage(),
 		QuotaManager:  qm,
 		MetricFactory: mf,
-		NewKeyProto: func(ctx context.Context, spec *keyspb.Specification) (proto.Message, error) {
-			return der.NewProtoFromSpec(spec)
-		},
 	}
 
 	// Enable CPU profile if requested.
@@ -169,7 +166,7 @@ func main() {
 				return err
 			}
 			trillian.RegisterTrillianLogServer(s, logServer)
-			if *quota.System == etcd.QuotaManagerName {
+			if *quotaSystem == etcd.QuotaManagerName {
 				quotapb.RegisterQuotaServer(s, quotaapi.NewServer(client))
 			}
 			return nil

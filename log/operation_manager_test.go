@@ -50,59 +50,12 @@ func defaultOperationInfo(registry extension.Registry) OperationInfo {
 	}
 }
 
-func TestOperationManagerSnapshotFails(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	fakeStorage := storage.NewMockLogStorage(ctrl)
-	fakeStorage.EXPECT().Snapshot(gomock.Any()).Return(nil, errors.New("TX"))
-
-	registry := extension.Registry{
-		LogStorage: fakeStorage,
-	}
-
-	mockLogOp := NewMockOperation(ctrl)
-
-	ctx := context.Background()
-	info := defaultOperationInfo(registry)
-	lom := NewOperationManager(info, mockLogOp)
-
-	lom.OperationSingle(ctx)
-}
-
 func TestOperationManagerGetLogsFails(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	mockTx := storage.NewMockReadOnlyLogTX(ctrl)
-	mockTx.EXPECT().GetActiveLogIDs(gomock.Any()).Return(nil, errors.New("getactivelogs"))
-	mockTx.EXPECT().Close().Return(nil)
 	fakeStorage := storage.NewMockLogStorage(ctrl)
-	fakeStorage.EXPECT().Snapshot(gomock.Any()).Return(mockTx, nil)
-
-	registry := extension.Registry{
-		LogStorage: fakeStorage,
-	}
-
-	mockLogOp := NewMockOperation(ctrl)
-
-	ctx := context.Background()
-	info := defaultOperationInfo(registry)
-	lom := NewOperationManager(info, mockLogOp)
-
-	lom.OperationSingle(ctx)
-}
-
-func TestOperationManagerCommitFails(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockTx := storage.NewMockReadOnlyLogTX(ctrl)
-	mockTx.EXPECT().GetActiveLogIDs(gomock.Any()).Return([]int64{}, nil)
-	mockTx.EXPECT().Commit(gomock.Any()).Return(errors.New("commit"))
-	mockTx.EXPECT().Close().Return(nil)
-	fakeStorage := storage.NewMockLogStorage(ctrl)
-	fakeStorage.EXPECT().Snapshot(gomock.Any()).Return(mockTx, nil)
+	fakeStorage.EXPECT().GetActiveLogIDs(gomock.Any()).Return(nil, errors.New("getactivelogs"))
 
 	registry := extension.Registry{
 		LogStorage: fakeStorage,
@@ -144,11 +97,7 @@ func setupLogIDs(ctrl *gomock.Controller, logNames map[int64]string) (*storage.M
 	}
 
 	fakeStorage := storage.NewMockLogStorage(ctrl)
-	mockTx := storage.NewMockReadOnlyLogTX(ctrl)
-	mockTx.EXPECT().GetActiveLogIDs(gomock.Any()).AnyTimes().Return(ids, nil)
-	mockTx.EXPECT().Commit(gomock.Any()).AnyTimes().Return(nil)
-	mockTx.EXPECT().Close().AnyTimes().Return(nil)
-	fakeStorage.EXPECT().Snapshot(gomock.Any()).AnyTimes().Return(mockTx, nil)
+	fakeStorage.EXPECT().GetActiveLogIDs(gomock.Any()).AnyTimes().Return(ids, nil)
 
 	mockAdmin := storage.NewMockAdminStorage(ctrl)
 	mockAdminTx := storage.NewMockReadOnlyAdminTX(ctrl)
@@ -409,7 +358,7 @@ func TestHeldInfo(t *testing.T) {
 	info := defaultOperationInfo(registry)
 	lom := NewOperationManager(info, mockLogOp)
 
-	var tests = []struct {
+	tests := []struct {
 		in   []int64
 		want string
 	}{
@@ -433,7 +382,7 @@ func TestMasterFor(t *testing.T) {
 	firstIDs := []int64{1, 2, 3, 4}
 	allIDs := []int64{1, 2, 3, 4, 5, 6}
 
-	var tests = []struct {
+	tests := []struct {
 		desc    string
 		factory election2.Factory
 		want1   []int64
@@ -442,7 +391,7 @@ func TestMasterFor(t *testing.T) {
 		{desc: "no-factory", factory: nil, want1: firstIDs, want2: allIDs},
 		{desc: "noop-factory", factory: election2.NoopFactory{}, want1: firstIDs, want2: allIDs},
 		{desc: "master-for-even", factory: masterForEvenFactory{}, want1: []int64{2, 4}, want2: []int64{2, 4, 6}},
-		{desc: "failure-factory", factory: failureFactory{}, want1: nil, want2: nil},
+		{desc: "failure-factory", factory: failureFactory{}, want1: []int64{}, want2: []int64{}},
 	}
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {

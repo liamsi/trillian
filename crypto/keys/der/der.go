@@ -15,51 +15,24 @@
 package der
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
 
-	"github.com/google/trillian/crypto/keys"
 	"github.com/google/trillian/crypto/keyspb"
 	"golang.org/x/crypto/ed25519"
+	"google.golang.org/protobuf/proto"
 )
 
-// FromProto takes a PrivateKey protobuf message and returns the private key contained within.
-func FromProto(pb *keyspb.PrivateKey) (crypto.Signer, error) {
-	return UnmarshalPrivateKey(pb.GetDer())
-}
-
-// NewProtoFromSpec creates a new private key based on a key specification.
-// It returns a PrivateKey protobuf message that contains the private key.
-func NewProtoFromSpec(spec *keyspb.Specification) (*keyspb.PrivateKey, error) {
-	key, err := keys.NewFromSpec(spec)
-	if err != nil {
-		return nil, fmt.Errorf("der: error generating key: %v", err)
+// FromProto builds a crypto.Signer from a proto.Message, which must be of type PrivateKey.
+func FromProto(_ context.Context, pb proto.Message) (crypto.Signer, error) {
+	if pb, ok := pb.(*keyspb.PrivateKey); ok {
+		return UnmarshalPrivateKey(pb.GetDer())
 	}
-
-	der, err := MarshalPrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("der: error marshaling private key: %v", err)
-	}
-
-	return &keyspb.PrivateKey{Der: der}, nil
-}
-
-// FromPublicProto takes a PublicKey protobuf message and returns the public
-// key contained within.
-func FromPublicProto(pb *keyspb.PublicKey) (crypto.PublicKey, error) {
-	return UnmarshalPublicKey(pb.GetDer())
-}
-
-// ToPublicProto returns a keyspb.PublicKey that contains pubKey in DER encoding.
-func ToPublicProto(pubKey crypto.PublicKey) (*keyspb.PublicKey, error) {
-	keyDER, err := MarshalPublicKey(pubKey)
-	if err != nil {
-		return nil, err
-	}
-	return &keyspb.PublicKey{Der: keyDER}, nil
+	return nil, fmt.Errorf("der: got %T, want *keyspb.PrivateKey", pb)
 }
 
 // UnmarshalPrivateKey reads a DER-encoded private key.

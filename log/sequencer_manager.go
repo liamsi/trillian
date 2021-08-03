@@ -17,25 +17,18 @@ package log
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
 	"github.com/google/trillian/extension"
-	"github.com/google/trillian/merkle/hashers"
 	"github.com/google/trillian/trees"
-
-	tcrypto "github.com/google/trillian/crypto"
 )
 
 // SequencerManager provides sequencing operations for a collection of Logs.
 type SequencerManager struct {
-	guardWindow  time.Duration
-	registry     extension.Registry
-	signers      map[int64]*tcrypto.Signer
-	signersMutex sync.Mutex
+	guardWindow time.Duration
+	registry    extension.Registry
 }
 
 var seqOpts = trees.NewGetOpts(trees.SequenceLog, trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG)
@@ -43,10 +36,10 @@ var seqOpts = trees.NewGetOpts(trees.SequenceLog, trillian.TreeType_LOG, trillia
 // NewSequencerManager creates a new SequencerManager instance based on the provided KeyManager instance
 // and guard window.
 func NewSequencerManager(registry extension.Registry, gw time.Duration) *SequencerManager {
+	InitMetrics(registry.MetricFactory)
 	return &SequencerManager{
 		guardWindow: gw,
 		registry:    registry,
-		signers:     make(map[int64]*tcrypto.Signer),
 	}
 }
 
@@ -61,45 +54,14 @@ func (s *SequencerManager) ExecutePass(ctx context.Context, logID int64, info *O
 	}
 	ctx = trees.NewContext(ctx, tree)
 
-	hasher, err := hashers.NewLogHasher(tree.HashStrategy)
-	if err != nil {
-		return 0, fmt.Errorf("error getting hasher for log %v: %v", logID, err)
-	}
-
-	signer, err := s.getSigner(ctx, tree)
-	if err != nil {
-		return 0, fmt.Errorf("error getting signer for log %v: %v", logID, err)
-	}
-
-	sequencer := NewSequencer(hasher, info.TimeSource, s.registry.LogStorage, signer, s.registry.MetricFactory, s.registry.QuotaManager)
-
-	maxRootDuration, err := ptypes.Duration(tree.MaxRootDuration)
-	if err != nil {
+	maxRootDuration := tree.MaxRootDuration.AsDuration()
+	if !tree.MaxRootDuration.IsValid() {
 		glog.Warning("failed to parse tree.MaxRootDuration, using zero")
 		maxRootDuration = 0
 	}
-	leaves, err := sequencer.IntegrateBatch(ctx, tree, info.BatchSize, s.guardWindow, maxRootDuration)
+	leaves, err := IntegrateBatch(ctx, tree, info.BatchSize, s.guardWindow, maxRootDuration, info.TimeSource, s.registry.LogStorage, s.registry.QuotaManager)
 	if err != nil {
 		return 0, fmt.Errorf("failed to integrate batch for %v: %v", logID, err)
 	}
 	return leaves, nil
-}
-
-// getSigner returns a signer for the given tree.
-// Signers are cached, so only one will be created per tree.
-func (s *SequencerManager) getSigner(ctx context.Context, tree *trillian.Tree) (*tcrypto.Signer, error) {
-	s.signersMutex.Lock()
-	defer s.signersMutex.Unlock()
-
-	if signer, ok := s.signers[tree.GetTreeId()]; ok {
-		return signer, nil
-	}
-
-	signer, err := trees.Signer(ctx, tree)
-	if err != nil {
-		return nil, err
-	}
-
-	s.signers[tree.GetTreeId()] = signer
-	return signer, nil
 }

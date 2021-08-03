@@ -22,18 +22,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
 	"github.com/google/trillian/quota"
 	"github.com/google/trillian/quota/mysqlqm"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/mysql"
 	"github.com/google/trillian/storage/testdb"
-	"github.com/google/trillian/testonly"
-	"github.com/google/trillian/trees"
 	"github.com/google/trillian/types"
 
-	tcrypto "github.com/google/trillian/crypto"
 	stestonly "github.com/google/trillian/storage/testonly"
 )
 
@@ -182,48 +178,6 @@ func TestQuotaManager_GetTokens_InformationSchema(t *testing.T) {
 	}
 }
 
-func TestQuotaManager_PeekTokens(t *testing.T) {
-	testdb.SkipIfNoMySQL(t)
-	ctx := context.Background()
-
-	db, done, err := testdb.NewTrillianDB(ctx)
-	if err != nil {
-		t.Fatalf("GetTestDB() returned err = %v", err)
-	}
-	defer done(ctx)
-
-	tree, err := createTree(ctx, db)
-	if err != nil {
-		t.Fatalf("createTree() returned err = %v", err)
-	}
-
-	unsequencedRows := 10
-	maxUnsequencedRows := 1000
-	wantRows := maxUnsequencedRows - unsequencedRows
-	if err := setUnsequencedRows(ctx, db, tree, unsequencedRows); err != nil {
-		t.Fatalf("setUnsequencedRows() returned err = %v", err)
-	}
-
-	// Test using select count(*) to allow for precise assertions without flakiness.
-	qm := &mysqlqm.QuotaManager{DB: db, MaxUnsequencedRows: maxUnsequencedRows, UseSelectCount: true}
-	specs := allSpecs(ctx, qm, tree.TreeId)
-	tokens, err := qm.PeekTokens(ctx, specs)
-	if err != nil {
-		t.Fatalf("PeekTokens() returned err = %v", err)
-	}
-
-	// All specs but Global/Write are infinite
-	wantTokens := make(map[quota.Spec]int)
-	for _, spec := range specs {
-		wantTokens[spec] = quota.MaxTokens
-	}
-	wantTokens[quota.Spec{Group: quota.Global, Kind: quota.Write}] = wantRows
-
-	if diff := cmp.Diff(tokens, wantTokens); diff != "" {
-		t.Errorf("post-PeekTokens() diff:\n%v", diff)
-	}
-}
-
 func TestQuotaManager_Noops(t *testing.T) {
 	testdb.SkipIfNoMySQL(t)
 	ctx := context.Background()
@@ -298,11 +252,11 @@ func createTree(ctx context.Context, db *sql.DB) (*trillian.Tree, error) {
 	{
 		ls := mysql.NewLogStorage(db, nil)
 		err := ls.ReadWriteTransaction(ctx, tree, func(ctx context.Context, tx storage.LogTreeTX) error {
-			signer := tcrypto.NewSigner(0, testonly.NewSignerWithFixedSig(nil, []byte("notempty")), crypto.SHA256)
-			slr, err := signer.SignLogRoot(&types.LogRootV1{RootHash: []byte{0}})
+			logRoot, err := (&types.LogRootV1{RootHash: []byte{0}}).MarshalBinary()
 			if err != nil {
 				return err
 			}
+			slr := &trillian.SignedLogRoot{LogRoot: logRoot}
 			return tx.StoreSignedLogRoot(ctx, slr)
 		})
 		if err != nil {
@@ -314,11 +268,7 @@ func createTree(ctx context.Context, db *sql.DB) (*trillian.Tree, error) {
 }
 
 func queueLeaves(ctx context.Context, db *sql.DB, tree *trillian.Tree, firstID, num int) error {
-	hasherFn, err := trees.Hash(tree)
-	if err != nil {
-		return err
-	}
-	hasher := hasherFn.New()
+	hasher := crypto.SHA256.New()
 
 	leaves := []*trillian.LogLeaf{}
 	for i := 0; i < num; i++ {
@@ -337,7 +287,7 @@ func queueLeaves(ctx context.Context, db *sql.DB, tree *trillian.Tree, firstID, 
 	}
 
 	ls := mysql.NewLogStorage(db, nil)
-	_, err = ls.QueueLeaves(ctx, tree, leaves, time.Now())
+	_, err := ls.QueueLeaves(ctx, tree, leaves, time.Now())
 	return err
 }
 

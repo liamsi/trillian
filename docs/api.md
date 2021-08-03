@@ -4,8 +4,6 @@
 ## Table of Contents
 
 - [trillian_log_api.proto](#trillian_log_api.proto)
-    - [AddSequencedLeafRequest](#trillian.AddSequencedLeafRequest)
-    - [AddSequencedLeafResponse](#trillian.AddSequencedLeafResponse)
     - [AddSequencedLeavesRequest](#trillian.AddSequencedLeavesRequest)
     - [AddSequencedLeavesResponse](#trillian.AddSequencedLeavesResponse)
     - [ChargeTo](#trillian.ChargeTo)
@@ -19,51 +17,16 @@
     - [GetInclusionProofResponse](#trillian.GetInclusionProofResponse)
     - [GetLatestSignedLogRootRequest](#trillian.GetLatestSignedLogRootRequest)
     - [GetLatestSignedLogRootResponse](#trillian.GetLatestSignedLogRootResponse)
-    - [GetLeavesByHashRequest](#trillian.GetLeavesByHashRequest)
-    - [GetLeavesByHashResponse](#trillian.GetLeavesByHashResponse)
-    - [GetLeavesByIndexRequest](#trillian.GetLeavesByIndexRequest)
-    - [GetLeavesByIndexResponse](#trillian.GetLeavesByIndexResponse)
     - [GetLeavesByRangeRequest](#trillian.GetLeavesByRangeRequest)
     - [GetLeavesByRangeResponse](#trillian.GetLeavesByRangeResponse)
-    - [GetSequencedLeafCountRequest](#trillian.GetSequencedLeafCountRequest)
-    - [GetSequencedLeafCountResponse](#trillian.GetSequencedLeafCountResponse)
     - [InitLogRequest](#trillian.InitLogRequest)
     - [InitLogResponse](#trillian.InitLogResponse)
     - [LogLeaf](#trillian.LogLeaf)
     - [QueueLeafRequest](#trillian.QueueLeafRequest)
     - [QueueLeafResponse](#trillian.QueueLeafResponse)
-    - [QueueLeavesRequest](#trillian.QueueLeavesRequest)
-    - [QueueLeavesResponse](#trillian.QueueLeavesResponse)
     - [QueuedLogLeaf](#trillian.QueuedLogLeaf)
   
     - [TrillianLog](#trillian.TrillianLog)
-  
-- [trillian_log_sequencer_api.proto](#trillian_log_sequencer_api.proto)
-    - [TrillianLogSequencer](#trillian.TrillianLogSequencer)
-  
-- [trillian_map_api.proto](#trillian_map_api.proto)
-    - [GetLastInRangeByRevisionRequest](#trillian.GetLastInRangeByRevisionRequest)
-    - [GetMapLeafByRevisionRequest](#trillian.GetMapLeafByRevisionRequest)
-    - [GetMapLeafRequest](#trillian.GetMapLeafRequest)
-    - [GetMapLeafResponse](#trillian.GetMapLeafResponse)
-    - [GetMapLeavesByRevisionRequest](#trillian.GetMapLeavesByRevisionRequest)
-    - [GetMapLeavesRequest](#trillian.GetMapLeavesRequest)
-    - [GetMapLeavesResponse](#trillian.GetMapLeavesResponse)
-    - [GetSignedMapRootByRevisionRequest](#trillian.GetSignedMapRootByRevisionRequest)
-    - [GetSignedMapRootRequest](#trillian.GetSignedMapRootRequest)
-    - [GetSignedMapRootResponse](#trillian.GetSignedMapRootResponse)
-    - [InitMapRequest](#trillian.InitMapRequest)
-    - [InitMapResponse](#trillian.InitMapResponse)
-    - [MapLeaf](#trillian.MapLeaf)
-    - [MapLeafInclusion](#trillian.MapLeafInclusion)
-    - [MapLeaves](#trillian.MapLeaves)
-    - [SetMapLeavesRequest](#trillian.SetMapLeavesRequest)
-    - [SetMapLeavesResponse](#trillian.SetMapLeavesResponse)
-    - [WriteMapLeavesRequest](#trillian.WriteMapLeavesRequest)
-    - [WriteMapLeavesResponse](#trillian.WriteMapLeavesResponse)
-  
-    - [TrillianMap](#trillian.TrillianMap)
-    - [TrillianMapWrite](#trillian.TrillianMapWrite)
   
 - [trillian_admin_api.proto](#trillian_admin_api.proto)
     - [CreateTreeRequest](#trillian.CreateTreeRequest)
@@ -78,14 +41,11 @@
   
 - [trillian.proto](#trillian.proto)
     - [Proof](#trillian.Proof)
-    - [SignedEntryTimestamp](#trillian.SignedEntryTimestamp)
     - [SignedLogRoot](#trillian.SignedLogRoot)
-    - [SignedMapRoot](#trillian.SignedMapRoot)
     - [Tree](#trillian.Tree)
   
     - [HashStrategy](#trillian.HashStrategy)
     - [LogRootFormat](#trillian.LogRootFormat)
-    - [MapRootFormat](#trillian.MapRootFormat)
     - [TreeState](#trillian.TreeState)
     - [TreeType](#trillian.TreeType)
   
@@ -97,38 +57,6 @@
 <p align="right"><a href="#top">Top</a></p>
 
 ## trillian_log_api.proto
-
-
-
-<a name="trillian.AddSequencedLeafRequest"></a>
-
-### AddSequencedLeafRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| log_id | [int64](#int64) |  |  |
-| leaf | [LogLeaf](#trillian.LogLeaf) |  |  |
-| charge_to | [ChargeTo](#trillian.ChargeTo) |  |  |
-
-
-
-
-
-
-<a name="trillian.AddSequencedLeafResponse"></a>
-
-### AddSequencedLeafResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| result | [QueuedLogLeaf](#trillian.QueuedLogLeaf) |  |  |
-
-
-
 
 
 
@@ -175,7 +103,7 @@ be checked and charged.
 | ----- | ---- | ----- | ----------- |
 | user | [string](#string) | repeated | user is a list of personality-defined strings. Trillian will treat them as /User/%{user}/... keys when checking and charging quota. If one or more of the specified users has insufficient quota, the request will be denied.
 
-As an example, a Certificate Transparency frontend might set the following user strings when sending a QueueLeaves request to the Trillian log: - The requesting IP address. This would limit the number of requests per IP. - The &#34;intermediate-&lt;hash&gt;&#34; for each of the intermediate certificates in the submitted chain. This would have the effect of limiting the rate of submissions under a given intermediate/root. |
+As an example, a Certificate Transparency frontend might set the following user strings when sending a QueueLeaf request to the Trillian log: - The requesting IP address. This would limit the number of requests per IP. - The &#34;intermediate-&lt;hash&gt;&#34; for each of the intermediate certificates in the submitted chain. This would have the effect of limiting the rate of submissions under a given intermediate/root. |
 
 
 
@@ -353,73 +281,6 @@ As an example, a Certificate Transparency frontend might set the following user 
 
 
 
-<a name="trillian.GetLeavesByHashRequest"></a>
-
-### GetLeavesByHashRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| log_id | [int64](#int64) |  |  |
-| leaf_hash | [bytes](#bytes) | repeated | The Merkle leaf hash of the leaf to be retrieved. |
-| order_by_sequence | [bool](#bool) |  | If order_by_sequence is set then leaves will be returned in order of ascending leaf index. |
-| charge_to | [ChargeTo](#trillian.ChargeTo) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetLeavesByHashResponse"></a>
-
-### GetLeavesByHashResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| leaves | [LogLeaf](#trillian.LogLeaf) | repeated |  |
-| signed_log_root | [SignedLogRoot](#trillian.SignedLogRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetLeavesByIndexRequest"></a>
-
-### GetLeavesByIndexRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| log_id | [int64](#int64) |  |  |
-| leaf_index | [int64](#int64) | repeated |  |
-| charge_to | [ChargeTo](#trillian.ChargeTo) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetLeavesByIndexResponse"></a>
-
-### GetLeavesByIndexResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| leaves | [LogLeaf](#trillian.LogLeaf) | repeated | TODO(gbelvin): Response syntax does not allow for some requested leaves to be available, and some not (but using QueuedLogLeaf might) |
-| signed_log_root | [SignedLogRoot](#trillian.SignedLogRoot) |  |  |
-
-
-
-
-
-
 <a name="trillian.GetLeavesByRangeRequest"></a>
 
 ### GetLeavesByRangeRequest
@@ -448,40 +309,6 @@ As an example, a Certificate Transparency frontend might set the following user 
 | ----- | ---- | ----- | ----------- |
 | leaves | [LogLeaf](#trillian.LogLeaf) | repeated | Returned log leaves starting from the `start_index` of the request, in order. There may be fewer than `request.count` leaves returned, if the requested range extended beyond the size of the tree or if the server opted to return fewer leaves than requested. |
 | signed_log_root | [SignedLogRoot](#trillian.SignedLogRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetSequencedLeafCountRequest"></a>
-
-### GetSequencedLeafCountRequest
-DO NOT USE - FOR DEBUGGING/TEST ONLY
-
-(Use GetLatestSignedLogRoot then de-serialize the Log Root and use
-use the tree size field within.)
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| log_id | [int64](#int64) |  |  |
-| charge_to | [ChargeTo](#trillian.ChargeTo) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetSequencedLeafCountResponse"></a>
-
-### GetSequencedLeafCountResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| leaf_count | [int64](#int64) |  |  |
 
 
 
@@ -588,38 +415,6 @@ TODO(pavelkalinnikov): Consider instead using `H(cert)` and allowing identity ha
 
 
 
-<a name="trillian.QueueLeavesRequest"></a>
-
-### QueueLeavesRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| log_id | [int64](#int64) |  |  |
-| leaves | [LogLeaf](#trillian.LogLeaf) | repeated |  |
-| charge_to | [ChargeTo](#trillian.ChargeTo) |  |  |
-
-
-
-
-
-
-<a name="trillian.QueueLeavesResponse"></a>
-
-### QueueLeavesResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| queued_leaves | [QueuedLogLeaf](#trillian.QueuedLogLeaf) | repeated | Same number and order as in the corresponding request. |
-
-
-
-
-
-
 <a name="trillian.QueuedLogLeaf"></a>
 
 ### QueuedLogLeaf
@@ -678,7 +473,6 @@ in this case the server will typically return an OK response that contains:
 | Method Name | Request Type | Response Type | Description |
 | ----------- | ------------ | ------------- | ------------|
 | QueueLeaf | [QueueLeafRequest](#trillian.QueueLeafRequest) | [QueueLeafResponse](#trillian.QueueLeafResponse) | QueueLeaf adds a single leaf to the queue of pending leaves for a normal log. |
-| AddSequencedLeaf | [AddSequencedLeafRequest](#trillian.AddSequencedLeafRequest) | [AddSequencedLeafResponse](#trillian.AddSequencedLeafResponse) | AddSequencedLeaf adds a single leaf with an assigned sequence number to a pre-ordered log. |
 | GetInclusionProof | [GetInclusionProofRequest](#trillian.GetInclusionProofRequest) | [GetInclusionProofResponse](#trillian.GetInclusionProofResponse) | GetInclusionProof returns an inclusion proof for a leaf with a given index in a particular tree.
 
 If the requested tree_size is larger than the server is aware of, the response will include the latest known log root and an empty proof. |
@@ -691,406 +485,12 @@ If the requested tree size is larger than the server is aware of, the response w
 | GetLatestSignedLogRoot | [GetLatestSignedLogRootRequest](#trillian.GetLatestSignedLogRootRequest) | [GetLatestSignedLogRootResponse](#trillian.GetLatestSignedLogRootResponse) | GetLatestSignedLogRoot returns the latest signed log root for a given tree, and optionally also includes a consistency proof from an earlier tree size to the new size of the tree.
 
 If the earlier tree size is larger than the server is aware of, an InvalidArgument error is returned. |
-| GetSequencedLeafCount | [GetSequencedLeafCountRequest](#trillian.GetSequencedLeafCountRequest) | [GetSequencedLeafCountResponse](#trillian.GetSequencedLeafCountResponse) | GetSequencedLeafCount returns the total number of leaves that have been integrated into the given tree.
-
-DO NOT USE - FOR DEBUGGING/TEST ONLY
-
-(Use GetLatestSignedLogRoot then de-serialize the Log Root and use use the tree size field within.) |
 | GetEntryAndProof | [GetEntryAndProofRequest](#trillian.GetEntryAndProofRequest) | [GetEntryAndProofResponse](#trillian.GetEntryAndProofResponse) | GetEntryAndProof returns a log leaf and the corresponding inclusion proof to a specified tree size, for a given leaf index in a particular tree.
 
 If the requested tree size is unavailable but the leaf is in scope for the current tree, the returned proof will be for the current tree size rather than the requested tree size. |
 | InitLog | [InitLogRequest](#trillian.InitLogRequest) | [InitLogResponse](#trillian.InitLogResponse) | InitLog initializes a particular tree, creating the initial signed log root (which will be of size 0). |
-| QueueLeaves | [QueueLeavesRequest](#trillian.QueueLeavesRequest) | [QueueLeavesResponse](#trillian.QueueLeavesResponse) | QueueLeaf adds a batch of leaves to the queue of pending leaves for a normal log. |
 | AddSequencedLeaves | [AddSequencedLeavesRequest](#trillian.AddSequencedLeavesRequest) | [AddSequencedLeavesResponse](#trillian.AddSequencedLeavesResponse) | AddSequencedLeaves adds a batch of leaves with assigned sequence numbers to a pre-ordered log. The indices of the provided leaves must be contiguous. |
-| GetLeavesByIndex | [GetLeavesByIndexRequest](#trillian.GetLeavesByIndexRequest) | [GetLeavesByIndexResponse](#trillian.GetLeavesByIndexResponse) | GetLeavesByIndex returns a batch of leaves whose leaf indices are provided in the request. |
 | GetLeavesByRange | [GetLeavesByRangeRequest](#trillian.GetLeavesByRangeRequest) | [GetLeavesByRangeResponse](#trillian.GetLeavesByRangeResponse) | GetLeavesByRange returns a batch of leaves whose leaf indices are in a sequential range. |
-| GetLeavesByHash | [GetLeavesByHashRequest](#trillian.GetLeavesByHashRequest) | [GetLeavesByHashResponse](#trillian.GetLeavesByHashResponse) | GetLeavesByHash returns a batch of leaves which are identified by their Merkle leaf hash values. |
-
- 
-
-
-
-<a name="trillian_log_sequencer_api.proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## trillian_log_sequencer_api.proto
-
-
- 
-
- 
-
- 
-
-
-<a name="trillian.TrillianLogSequencer"></a>
-
-### TrillianLogSequencer
-The API supports sequencing in the Trillian Log Sequencer.
-
-| Method Name | Request Type | Response Type | Description |
-| ----------- | ------------ | ------------- | ------------|
-
- 
-
-
-
-<a name="trillian_map_api.proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## trillian_map_api.proto
-
-
-
-<a name="trillian.GetLastInRangeByRevisionRequest"></a>
-
-### GetLastInRangeByRevisionRequest
-GetLastInRangeByRevisionRequest specifies a range in the map at a revision.
-The range is defined as the entire subtree below a particular point in the 
-Merkle tree. Another way of saying this is that the range matches all leaves
-that share a common prefix of `prefix_bits` with `prefix`.
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| revision | [int64](#int64) |  |  |
-| prefix | [bytes](#bytes) |  |  |
-| prefix_bits | [int32](#int32) |  | prefix_bits is the number of bits to include, starting from the left, or most significant bit (MSB). |
-
-
-
-
-
-
-<a name="trillian.GetMapLeafByRevisionRequest"></a>
-
-### GetMapLeafByRevisionRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| index | [bytes](#bytes) |  |  |
-| revision | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetMapLeafRequest"></a>
-
-### GetMapLeafRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| index | [bytes](#bytes) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetMapLeafResponse"></a>
-
-### GetMapLeafResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_leaf_inclusion | [MapLeafInclusion](#trillian.MapLeafInclusion) |  |  |
-| map_root | [SignedMapRoot](#trillian.SignedMapRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetMapLeavesByRevisionRequest"></a>
-
-### GetMapLeavesByRevisionRequest
-This message replaces the current implementation of GetMapLeavesRequest
-with the difference that revision must be &gt;=0.
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| index | [bytes](#bytes) | repeated | index(es) to query. It is an error to request the same index more than once. |
-| revision | [int64](#int64) |  | revision &gt;= 0. |
-
-
-
-
-
-
-<a name="trillian.GetMapLeavesRequest"></a>
-
-### GetMapLeavesRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| index | [bytes](#bytes) | repeated |  |
-
-
-
-
-
-
-<a name="trillian.GetMapLeavesResponse"></a>
-
-### GetMapLeavesResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_leaf_inclusion | [MapLeafInclusion](#trillian.MapLeafInclusion) | repeated |  |
-| map_root | [SignedMapRoot](#trillian.SignedMapRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetSignedMapRootByRevisionRequest"></a>
-
-### GetSignedMapRootByRevisionRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| revision | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetSignedMapRootRequest"></a>
-
-### GetSignedMapRootRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="trillian.GetSignedMapRootResponse"></a>
-
-### GetSignedMapRootResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_root | [SignedMapRoot](#trillian.SignedMapRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.InitMapRequest"></a>
-
-### InitMapRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-
-
-
-
-
-
-<a name="trillian.InitMapResponse"></a>
-
-### InitMapResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| created | [SignedMapRoot](#trillian.SignedMapRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.MapLeaf"></a>
-
-### MapLeaf
-MapLeaf represents the data behind Map leaves.
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| index | [bytes](#bytes) |  | index is the location of this leaf. All indexes for a given Map must contain a constant number of bits. These are not numeric indices. Note that this is typically derived using a hash and thus the length of all indices in the map will match the number of bits in the hash function. |
-| leaf_hash | [bytes](#bytes) |  | leaf_hash is the tree hash of leaf_value. This does not need to be set on SetMapLeavesRequest; the server will fill it in. For an empty leaf (len(leaf_value)==0), there may be two possible values for this hash: - If the leaf has never been set, it counts as an empty subtree and a nil value is used. - If the leaf has been explicitly set to a zero-length entry, it no longer counts as empty and the value of hasher.HashLeaf(index, nil) will be used. |
-| leaf_value | [bytes](#bytes) |  | leaf_value is the data the tree commits to. |
-| extra_data | [bytes](#bytes) |  | extra_data holds related contextual data, but is not covered by any hash. |
-
-
-
-
-
-
-<a name="trillian.MapLeafInclusion"></a>
-
-### MapLeafInclusion
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| leaf | [MapLeaf](#trillian.MapLeaf) |  |  |
-| inclusion | [bytes](#bytes) | repeated | inclusion holds the inclusion proof for this leaf in the map root. It holds one entry for each level of the tree; combining each of these in turn with the leaf&#39;s hash (according to the tree&#39;s hash strategy) reproduces the root hash. A nil entry for a particular level indicates that the node in question has an empty subtree beneath it (and so its associated hash value is hasher.HashEmpty(index, height) rather than hasher.HashChildren(l_hash, r_hash)). |
-
-
-
-
-
-
-<a name="trillian.MapLeaves"></a>
-
-### MapLeaves
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| leaves | [MapLeaf](#trillian.MapLeaf) | repeated |  |
-
-
-
-
-
-
-<a name="trillian.SetMapLeavesRequest"></a>
-
-### SetMapLeavesRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| leaves | [MapLeaf](#trillian.MapLeaf) | repeated | The leaves being set must have unique Index values within the request. |
-| metadata | [bytes](#bytes) |  |  |
-| revision | [int64](#int64) |  | The map revision to associate the leaves with. The request will fail if this revision already exists, does not match the current write revision, or is not positive. Note that revision = 0 is reserved for the empty tree. |
-
-
-
-
-
-
-<a name="trillian.SetMapLeavesResponse"></a>
-
-### SetMapLeavesResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_root | [SignedMapRoot](#trillian.SignedMapRoot) |  |  |
-
-
-
-
-
-
-<a name="trillian.WriteMapLeavesRequest"></a>
-
-### WriteMapLeavesRequest
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_id | [int64](#int64) |  |  |
-| leaves | [MapLeaf](#trillian.MapLeaf) | repeated | The leaves being set must have unique Index values within the request. |
-| metadata | [bytes](#bytes) |  | Metadata that the Map should associate with the new Map root after incorporating the leaf changes. The metadata will be reflected in the Map Root published for this revision. Map personalities should use metadata to persist any state needed later to continue mapping from an external data source. |
-| expect_revision | [int64](#int64) |  | The map revision to associate the leaves with. The request will fail if this revision already exists, does not match the current write revision, or is not positive. Note that revision = 0 is reserved for the empty tree. |
-
-
-
-
-
-
-<a name="trillian.WriteMapLeavesResponse"></a>
-
-### WriteMapLeavesResponse
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| revision | [int64](#int64) |  | The map revision that the leaves will be published at. This may be accompanied by a proof that the write request has been included in an input log in the future. |
-
-
-
-
-
- 
-
- 
-
- 
-
-
-<a name="trillian.TrillianMap"></a>
-
-### TrillianMap
-TrillianMap defines a service which provides access to a Verifiable Map as
-defined in the Verifiable Data Structures paper.
-
-| Method Name | Request Type | Response Type | Description |
-| ----------- | ------------ | ------------- | ------------|
-| GetLeaf | [GetMapLeafRequest](#trillian.GetMapLeafRequest) | [GetMapLeafResponse](#trillian.GetMapLeafResponse) | GetLeaves returns an inclusion proof for each index requested. For indexes that do not exist, the inclusion proof will use nil for the empty leaf value. |
-| GetLeafByRevision | [GetMapLeafByRevisionRequest](#trillian.GetMapLeafByRevisionRequest) | [GetMapLeafResponse](#trillian.GetMapLeafResponse) |  |
-| GetLeaves | [GetMapLeavesRequest](#trillian.GetMapLeavesRequest) | [GetMapLeavesResponse](#trillian.GetMapLeavesResponse) |  |
-| GetLeavesByRevision | [GetMapLeavesByRevisionRequest](#trillian.GetMapLeavesByRevisionRequest) | [GetMapLeavesResponse](#trillian.GetMapLeavesResponse) |  |
-| GetLeavesByRevisionNoProof | [GetMapLeavesByRevisionRequest](#trillian.GetMapLeavesByRevisionRequest) | [MapLeaves](#trillian.MapLeaves) | Deprecated: this should only be used by writers, which should migrate to TrillianMapWrite#GetLeavesByRevision |
-| GetLastInRangeByRevision | [GetLastInRangeByRevisionRequest](#trillian.GetLastInRangeByRevisionRequest) | [MapLeaf](#trillian.MapLeaf) | GetLastInRangeByRevision returns the last leaf in a requested range. |
-| SetLeaves | [SetMapLeavesRequest](#trillian.SetMapLeavesRequest) | [SetMapLeavesResponse](#trillian.SetMapLeavesResponse) | Deprecated: this should only be used by writers, which should migrate to TrillianMapWrite#WriteLeaves |
-| GetSignedMapRoot | [GetSignedMapRootRequest](#trillian.GetSignedMapRootRequest) | [GetSignedMapRootResponse](#trillian.GetSignedMapRootResponse) |  |
-| GetSignedMapRootByRevision | [GetSignedMapRootByRevisionRequest](#trillian.GetSignedMapRootByRevisionRequest) | [GetSignedMapRootResponse](#trillian.GetSignedMapRootResponse) |  |
-| InitMap | [InitMapRequest](#trillian.InitMapRequest) | [InitMapResponse](#trillian.InitMapResponse) |  |
-
-
-<a name="trillian.TrillianMapWrite"></a>
-
-### TrillianMapWrite
-TrillianMapWrite defines a service to allow writes against a Verifiable Map
-that will be readable via the TrillianMap service. The write API does not
-expose any Merkle Tree properties. This allows key/value writes to be
-decoupled from the Merkle Tree synthesis and publishing.
-
-| Method Name | Request Type | Response Type | Description |
-| ----------- | ------------ | ------------- | ------------|
-| GetLeavesByRevision | [GetMapLeavesByRevisionRequest](#trillian.GetMapLeavesByRevisionRequest) | [MapLeaves](#trillian.MapLeaves) | GetLeavesByRevision returns the requested map leaves without inclusion proofs. This API is designed for internal use where verification is not needed. |
-| WriteLeaves | [WriteMapLeavesRequest](#trillian.WriteMapLeavesRequest) | [WriteMapLeavesResponse](#trillian.WriteMapLeavesResponse) | WriteLeaves sets the values for the provided leaves, and returns the new map revision if successful. |
 
  
 
@@ -1112,7 +512,6 @@ CreateTree request.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | tree | [Tree](#trillian.Tree) |  | Tree to be created. See Tree and CreateTree for more details. |
-| key_spec | [keyspb.Specification](#keyspb.Specification) |  | Describes how the tree&#39;s private key should be generated. Only needs to be set if tree.private_key is not set. |
 
 
 
@@ -1223,7 +622,7 @@ UpdateTree request.
 
 ### TrillianAdmin
 Trillian Administrative interface.
-Allows creation and management of Trillian trees (both log and map trees).
+Allows creation and management of Trillian trees.
 
 | Method Name | Request Type | Response Type | Description |
 | ----------- | ------------ | ------------- | ------------|
@@ -1262,23 +661,6 @@ by the API.
 
 
 
-<a name="trillian.SignedEntryTimestamp"></a>
-
-### SignedEntryTimestamp
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| timestamp_nanos | [int64](#int64) |  |  |
-| log_id | [int64](#int64) |  |  |
-| signature | [sigpb.DigitallySigned](#sigpb.DigitallySigned) |  |  |
-
-
-
-
-
-
 <a name="trillian.SignedLogRoot"></a>
 
 ### SignedLogRoot
@@ -1287,8 +669,9 @@ SignedLogRoot represents a commitment by a Log to a particular tree.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| key_hint | [bytes](#bytes) |  | key_hint is a hint to identify the public key for signature verification. key_hint is not authenticated and may be incorrect or missing, in which case all known public keys may be used to verify the signature. When directly communicating with a Trillian gRPC server, the key_hint will typically contain the LogID encoded as a big-endian 64-bit integer; however, in other contexts the key_hint is likely to have different contents (e.g. it could be a GUID, a URL &#43; TreeID, or it could be derived from the public key itself). |
-| log_root | [bytes](#bytes) |  | log_root holds the TLS-serialization of the following structure (described in RFC5246 notation): Clients should validate log_root_signature with VerifySignedLogRoot before deserializing log_root. enum { v1(1), (65535)} Version; struct { uint64 tree_size; opaque root_hash&lt;0..128&gt;; uint64 timestamp_nanos; uint64 revision; opaque metadata&lt;0..65535&gt;; } LogRootV1; struct { Version version; select(version) { case v1: LogRootV1; } } LogRoot;
+| log_root | [bytes](#bytes) |  | log_root holds the TLS-serialization of the following structure (described in RFC5246 notation):
+
+enum { v1(1), (65535)} Version; struct { uint64 tree_size; opaque root_hash&lt;0..128&gt;; uint64 timestamp_nanos; uint64 revision; opaque metadata&lt;0..65535&gt;; } LogRootV1; struct { Version version; select(version) { case v1: LogRootV1; } } LogRoot;
 
 A serialized v1 log root will therefore be laid out as:
 
@@ -1299,23 +682,6 @@ A serialized v1 log root will therefore be laid out as:
 &#43;---&#43;---&#43;---&#43;---&#43;---&#43;-....---&#43; | len | metadata | &#43;---&#43;---&#43;---&#43;---&#43;---&#43;-....---&#43;
 
 (with all integers encoded big-endian). |
-| log_root_signature | [bytes](#bytes) |  | log_root_signature is the raw signature over log_root. |
-
-
-
-
-
-
-<a name="trillian.SignedMapRoot"></a>
-
-### SignedMapRoot
-SignedMapRoot represents a commitment by a Map to a particular tree.
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| map_root | [bytes](#bytes) |  | map_root holds the TLS-serialization of the following structure (described in RFC5246 notation): Clients should validate signature with VerifySignedMapRoot before deserializing map_root. enum { v1(1), (65535)} Version; struct { opaque root_hash&lt;0..128&gt;; uint64 timestamp_nanos; uint64 revision; opaque metadata&lt;0..65535&gt;; } MapRootV1; struct { Version version; select(version) { case v1: MapRootV1; } } MapRoot; |
-| signature | [bytes](#bytes) |  | Signature is the raw signature over MapRoot. |
 
 
 
@@ -1325,7 +691,7 @@ SignedMapRoot represents a commitment by a Map to a particular tree.
 <a name="trillian.Tree"></a>
 
 ### Tree
-Represents a tree, which may be either a verifiable log or map.
+Represents a tree.
 Readonly attributes are assigned at tree creation, after which they may not
 be modified.
 
@@ -1339,14 +705,9 @@ not created dynamically.
 | tree_id | [int64](#int64) |  | ID of the tree. Readonly. |
 | tree_state | [TreeState](#trillian.TreeState) |  | State of the tree. Trees are ACTIVE after creation. At any point the tree may transition between ACTIVE, DRAINING and FROZEN states. |
 | tree_type | [TreeType](#trillian.TreeType) |  | Type of the tree. Readonly after Tree creation. Exception: Can be switched from PREORDERED_LOG to LOG if the Tree is and remains in the FROZEN state. |
-| hash_strategy | [HashStrategy](#trillian.HashStrategy) |  | Hash strategy to be used by the tree. Readonly. |
-| hash_algorithm | [sigpb.DigitallySigned.HashAlgorithm](#sigpb.DigitallySigned.HashAlgorithm) |  | Hash algorithm to be used by the tree. Readonly. |
-| signature_algorithm | [sigpb.DigitallySigned.SignatureAlgorithm](#sigpb.DigitallySigned.SignatureAlgorithm) |  | Signature algorithm to be used by the tree. Readonly. |
 | display_name | [string](#string) |  | Display name of the tree. Optional. |
 | description | [string](#string) |  | Description of the tree, Optional. |
-| private_key | [google.protobuf.Any](#google.protobuf.Any) |  | Identifies the private key used for signing tree heads and entry timestamps. This can be any type of message to accommodate different key management systems, e.g. PEM files, HSMs, etc. Private keys are write-only: they&#39;re never returned by RPCs. The private_key message can be changed after a tree is created, but the underlying key must remain the same - this is to enable migrating a key from one provider to another. |
 | storage_settings | [google.protobuf.Any](#google.protobuf.Any) |  | Storage-specific settings. Varies according to the storage implementation backing Trillian. |
-| public_key | [keyspb.PublicKey](#keyspb.PublicKey) |  | The public key used for verifying tree heads and entry timestamps. Readonly. |
 | max_root_duration | [google.protobuf.Duration](#google.protobuf.Duration) |  | Interval after which a new signed root is produced even if there have been no submission. If zero, this behavior is disabled. |
 | create_time | [google.protobuf.Timestamp](#google.protobuf.Timestamp) |  | Time of tree creation. Readonly. |
 | update_time | [google.protobuf.Timestamp](#google.protobuf.Timestamp) |  | Time of last tree update. Readonly (automatically assigned on updates). |
@@ -1390,19 +751,6 @@ SignedLogRoot signature, as well as their ordering and formats.
 
 
 
-<a name="trillian.MapRootFormat"></a>
-
-### MapRootFormat
-MapRootFormat specifies the fields that are covered by the
-SignedMapRoot signature, as well as their ordering and formats.
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| MAP_ROOT_FORMAT_UNKNOWN | 0 |  |
-| MAP_ROOT_FORMAT_V1 | 1 |  |
-
-
-
 <a name="trillian.TreeState"></a>
 
 ### TreeState
@@ -1428,7 +776,6 @@ Type of the tree.
 | ---- | ------ | ----------- |
 | UNKNOWN_TREE_TYPE | 0 | Tree type cannot be determined. Included to enable detection of mismatched proto versions being used. Represents an invalid value. |
 | LOG | 1 | Tree represents a verifiable log. |
-| MAP | 2 | Tree represents a verifiable map. |
 | PREORDERED_LOG | 3 | Tree represents a verifiable pre-ordered log, i.e., a log whose entries are placed according to sequence numbers assigned outside of Trillian. |
 
 

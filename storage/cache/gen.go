@@ -17,15 +17,9 @@ package cache
 
 //go:generate mockgen -self_package github.com/google/trillian/storage/cache -package cache -imports github.com/google/trillian/storage/storagepb -destination mock_node_storage.go github.com/google/trillian/storage/cache NodeStorage
 
-import (
-	"context"
-
-	"github.com/google/trillian/storage/storagepb"
-	"github.com/google/trillian/storage/tree"
-)
+import "github.com/google/trillian/storage/storagepb"
 
 // NodeStorage provides an interface for storing and retrieving subtrees.
 type NodeStorage interface {
-	GetSubtree(n tree.NodeID) (*storagepb.SubtreeProto, error)
-	SetSubtrees(ctx context.Context, s []*storagepb.SubtreeProto) error
+	GetSubtree(prefix []byte) (*storagepb.SubtreeProto, error)
 }

@@ -15,40 +15,30 @@
 package client
 
 import (
-	"crypto"
 	"errors"
 	"fmt"
 
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys/der"
-	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/merkle/hashers"
-	"github.com/google/trillian/trees"
+	"github.com/google/trillian/merkle/logverifier"
+	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/types"
-
-	tcrypto "github.com/google/trillian/crypto"
 )
 
 // LogVerifier allows verification of output from Trillian Logs, both regular
 // and pre-ordered; it is safe for concurrent use (as its contents are fixed
 // after construction).
 type LogVerifier struct {
-	// Hasher is the hash strategy used to compute nodes in the Merkle tree.
-	Hasher hashers.LogHasher
-	// PubKey verifies the signature on the digest of LogRoot.
-	PubKey crypto.PublicKey
-	// SigHash computes the digest of LogRoot for signing.
-	SigHash crypto.Hash
-	v       merkle.LogVerifier
+	// hasher is the hash strategy used to compute nodes in the Merkle tree.
+	hasher hashers.LogHasher
+	v      logverifier.LogVerifier
 }
 
 // NewLogVerifier returns an object that can verify output from Trillian Logs.
-func NewLogVerifier(hasher hashers.LogHasher, pubKey crypto.PublicKey, sigHash crypto.Hash) *LogVerifier {
+func NewLogVerifier(hasher hashers.LogHasher) *LogVerifier {
 	return &LogVerifier{
-		Hasher:  hasher,
-		PubKey:  pubKey,
-		SigHash: sigHash,
-		v:       merkle.NewLogVerifier(hasher),
+		hasher: hasher,
+		v:      logverifier.New(hasher),
 	}
 }
 
@@ -63,28 +53,12 @@ func NewLogVerifierFromTree(config *trillian.Tree) (*LogVerifier, error) {
 		return nil, fmt.Errorf("client: NewLogVerifierFromTree(): TreeType: %v, want %v or %v", got, log, pLog)
 	}
 
-	logHasher, err := hashers.NewLogHasher(config.HashStrategy)
-	if err != nil {
-		return nil, fmt.Errorf("client: NewLogVerifierFromTree(): NewLogHasher(): %v", err)
-	}
-
-	logPubKey, err := der.UnmarshalPublicKey(config.PublicKey.GetDer())
-	if err != nil {
-		return nil, fmt.Errorf("client: NewLogVerifierFromTree(): Failed parsing Log public key: %v", err)
-	}
-
-	sigHash, err := trees.Hash(config)
-	if err != nil {
-		return nil, fmt.Errorf("client: NewLogVerifierFromTree(): Failed parsing Log signature hash: %v", err)
-	}
-
-	return NewLogVerifier(logHasher, logPubKey, sigHash), nil
+	return NewLogVerifier(rfc6962.DefaultHasher), nil
 }
 
 // VerifyRoot verifies that newRoot is a valid append-only operation from
 // trusted. If trusted.TreeSize is zero, a consistency proof is not needed.
 func (c *LogVerifier) VerifyRoot(trusted *types.LogRootV1, newRoot *trillian.SignedLogRoot, consistency [][]byte) (*types.LogRootV1, error) {
-
 	if trusted == nil {
 		return nil, fmt.Errorf("VerifyRoot() error: trusted == nil")
 	}
@@ -92,9 +66,8 @@ func (c *LogVerifier) VerifyRoot(trusted *types.LogRootV1, newRoot *trillian.Sig
 		return nil, fmt.Errorf("VerifyRoot() error: newRoot == nil")
 	}
 
-	// Verify SignedLogRoot signature and unpack its contents.
-	r, err := tcrypto.VerifySignedLogRoot(c.PubKey, c.SigHash, newRoot)
-	if err != nil {
+	var r types.LogRootV1
+	if err := r.UnmarshalBinary(newRoot.LogRoot); err != nil {
 		return nil, err
 	}
 
@@ -105,18 +78,7 @@ func (c *LogVerifier) VerifyRoot(trusted *types.LogRootV1, newRoot *trillian.Sig
 			return nil, fmt.Errorf("failed to verify consistency proof from %d->%d %x->%x: %v", trusted.TreeSize, r.TreeSize, trusted.RootHash, r.RootHash, err)
 		}
 	}
-	return r, nil
-}
-
-// VerifyInclusionAtIndex verifies that the inclusion proof for data at leafIndex
-// matches the given trusted root.
-func (c *LogVerifier) VerifyInclusionAtIndex(trusted *types.LogRootV1, data []byte, leafIndex int64, proof [][]byte) error {
-	if trusted == nil {
-		return fmt.Errorf("VerifyInclusionAtIndex() error: trusted == nil")
-	}
-	leaf := c.BuildLeaf(data)
-	return c.v.VerifyInclusionProof(leafIndex, int64(trusted.TreeSize),
-		proof, trusted.RootHash, leaf.MerkleLeafHash)
+	return &r, nil
 }
 
 // VerifyInclusionByHash verifies that the inclusion proof for the given Merkle leafHash
@@ -137,7 +99,7 @@ func (c *LogVerifier) VerifyInclusionByHash(trusted *types.LogRootV1, leafHash [
 // TODO(pavelkalinnikov): This can be misleading as it creates a partially
 // filled LogLeaf. Consider returning a pair instead, or leafHash only.
 func (c *LogVerifier) BuildLeaf(data []byte) *trillian.LogLeaf {
-	leafHash := c.Hasher.HashLeaf(data)
+	leafHash := c.hasher.HashLeaf(data)
 	return &trillian.LogLeaf{
 		LeafValue:      data,
 		MerkleLeafHash: leafHash,

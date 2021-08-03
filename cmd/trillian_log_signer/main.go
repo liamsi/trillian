@@ -22,6 +22,7 @@ import (
 	_ "net/http/pprof" // Register pprof HTTP handlers.
 	"os"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
@@ -40,22 +41,12 @@ import (
 	"github.com/google/trillian/util/election"
 	"github.com/google/trillian/util/election2"
 	etcdelect "github.com/google/trillian/util/election2/etcd"
-	etcdutil "github.com/google/trillian/util/etcd"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
-
-	tpb "github.com/google/trillian"
-
-	// Register key ProtoHandlers
-	_ "github.com/google/trillian/crypto/keys/der/proto"
-	_ "github.com/google/trillian/crypto/keys/pem/proto"
-	_ "github.com/google/trillian/crypto/keys/pkcs11/proto"
 
 	// Register supported storage providers.
 	_ "github.com/google/trillian/storage/cloudspanner"
 	_ "github.com/google/trillian/storage/mysql"
-
-	// Load hashers
-	_ "github.com/google/trillian/merkle/rfc6962"
 
 	// Load MySQL quota provider
 	_ "github.com/google/trillian/quota/mysqlqm"
@@ -75,9 +66,12 @@ var (
 	lockDir                  = flag.String("lock_file_path", "/test/multimaster", "etcd lock file directory path")
 	healthzTimeout           = flag.Duration("healthz_timeout", time.Second*5, "Timeout used during healthz checks")
 
+	quotaSystem         = flag.String("quota_system", "mysql", fmt.Sprintf("Quota system to use. One of: %v", quota.Providers()))
 	quotaIncreaseFactor = flag.Float64("quota_increase_factor", log.QuotaIncreaseFactor,
 		"Increase factor for tokens replenished by sequencing-based quotas (1 means a 1:1 relationship between sequenced leaves and replenished tokens)."+
 			"Only effective for --quota_system=etcd.")
+
+	storageSystem = flag.String("storage_system", "mysql", fmt.Sprintf("Storage system to use. One of: %v", storage.Providers()))
 
 	preElectionPause   = flag.Duration("pre_election_pause", 1*time.Second, "Maximum time to wait before starting elections")
 	masterHoldInterval = flag.Duration("master_hold_interval", 60*time.Second, "Minimum interval to hold mastership for")
@@ -106,17 +100,20 @@ func main() {
 	mf := prometheus.MetricFactory{}
 	monitoring.SetStartSpan(opencensus.StartSpan)
 
-	sp, err := storage.NewProviderFromFlags(mf)
+	sp, err := storage.NewProvider(*storageSystem, mf)
 	if err != nil {
 		glog.Exitf("Failed to get storage provider: %v", err)
 	}
 	defer sp.Close()
 
-	client, err := etcdutil.NewClientFromString(*etcd.Servers)
-	if err != nil {
-		glog.Exitf("Failed to connect to etcd at %v: %v", etcd.Servers, err)
-	}
-	if client != nil {
+	var client *clientv3.Client
+	if servers := *etcd.Servers; servers != "" {
+		if client, err = clientv3.New(clientv3.Config{
+			Endpoints:   strings.Split(servers, ","),
+			DialTimeout: 5 * time.Second,
+		}); err != nil {
+			glog.Exitf("Failed to connect to etcd at %v: %v", servers, err)
+		}
 		defer client.Close()
 	}
 
@@ -137,7 +134,7 @@ func main() {
 		glog.Exit("Either --force_master or --etcd_servers must be supplied")
 	}
 
-	qm, err := quota.NewManagerFromFlags()
+	qm, err := quota.NewManager(*quotaSystem)
 	if err != nil {
 		glog.Exitf("Error creating quota manager: %v", err)
 	}
@@ -186,19 +183,16 @@ func main() {
 	}
 
 	m := serverutil.Main{
-		RPCEndpoint:  *rpcEndpoint,
-		HTTPEndpoint: *httpEndpoint,
-		TLSCertFile:  *tlsCertFile,
-		TLSKeyFile:   *tlsKeyFile,
-		StatsPrefix:  "logsigner",
-		DBClose:      sp.Close,
-		Registry:     registry,
-		RegisterServerFn: func(s *grpc.Server, _ extension.Registry) error {
-			tpb.RegisterTrillianLogSequencerServer(s, &struct{}{})
-			return nil
-		},
-		IsHealthy:       sp.AdminStorage().CheckDatabaseAccessible,
-		HealthyDeadline: *healthzTimeout,
+		RPCEndpoint:      *rpcEndpoint,
+		HTTPEndpoint:     *httpEndpoint,
+		TLSCertFile:      *tlsCertFile,
+		TLSKeyFile:       *tlsKeyFile,
+		StatsPrefix:      "logsigner",
+		DBClose:          sp.Close,
+		Registry:         registry,
+		RegisterServerFn: func(s *grpc.Server, _ extension.Registry) error { return nil },
+		IsHealthy:        sp.AdminStorage().CheckDatabaseAccessible,
+		HealthyDeadline:  *healthzTimeout,
 	}
 
 	if err := m.Run(ctx); err != nil {

@@ -22,11 +22,11 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/testonly"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestDeletedTreeGC_Run(t *testing.T) {
@@ -45,7 +45,7 @@ func TestDeletedTreeGC_Run(t *testing.T) {
 	tree1 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	tree1.TreeId = 1
 	tree1.Deleted = true
-	tree1.DeleteTime, _ = ptypes.TimestampProto(time.Date(2017, 9, 21, 10, 0, 0, 0, time.UTC))
+	tree1.DeleteTime = timestamppb.New(time.Date(2017, 9, 21, 10, 0, 0, 0, time.UTC))
 
 	listTX1 := storage.NewMockReadOnlyAdminTX(ctrl)
 	listTX2 := storage.NewMockReadOnlyAdminTX(ctrl)
@@ -83,8 +83,7 @@ func TestDeletedTreeGC_Run(t *testing.T) {
 	const runInterval = 3 * time.Second
 
 	// now > tree1.DeleteTime + deleteThreshold, so tree1 gets deleted on first round
-	now, _ := ptypes.Timestamp(tree1.DeleteTime)
-	now = now.Add(deleteThreshold).Add(1 * time.Second)
+	now := tree1.DeleteTime.AsTime().Add(deleteThreshold).Add(1 * time.Second)
 	timeNow = func() time.Time { return now }
 
 	calls := 0
@@ -110,15 +109,15 @@ func TestDeletedTreeGC_RunOnce(t *testing.T) {
 	tree2 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	tree2.TreeId = 2
 	tree2.Deleted = true
-	tree2.DeleteTime, _ = ptypes.TimestampProto(time.Date(2017, 9, 21, 10, 0, 0, 0, time.UTC))
+	tree2.DeleteTime = timestamppb.New(time.Date(2017, 9, 21, 10, 0, 0, 0, time.UTC))
 	tree3 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	tree3.TreeId = 3
 	tree3.Deleted = true
-	tree3.DeleteTime, _ = ptypes.TimestampProto(time.Date(2017, 9, 22, 11, 0, 0, 0, time.UTC))
+	tree3.DeleteTime = timestamppb.New(time.Date(2017, 9, 22, 11, 0, 0, 0, time.UTC))
 	tree4 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	tree4.TreeId = 4
 	tree4.Deleted = true
-	tree4.DeleteTime, _ = ptypes.TimestampProto(time.Date(2017, 9, 23, 12, 0, 0, 0, time.UTC))
+	tree4.DeleteTime = timestamppb.New(time.Date(2017, 9, 23, 12, 0, 0, 0, time.UTC))
 	tree5 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	tree5.TreeId = 5
 	allTrees := []*trillian.Tree{tree1, tree2, tree3, tree4, tree5}
@@ -201,10 +200,7 @@ func TestDeletedTreeGC_RunOnceErrors(t *testing.T) {
 	defer ctrl.Finish()
 
 	deleteTime := time.Date(2017, 10, 25, 16, 0, 0, 0, time.UTC)
-	deleteTimePB, err := ptypes.TimestampProto(deleteTime)
-	if err != nil {
-		t.Fatalf("TimestampProto(%v) returned err = %v", deleteTime, err)
-	}
+	deleteTimePB := timestamppb.New(deleteTime)
 	logTree1 := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	logTree1.TreeId = 10
 	logTree1.Deleted = true
@@ -213,10 +209,6 @@ func TestDeletedTreeGC_RunOnceErrors(t *testing.T) {
 	logTree2.TreeId = 20
 	logTree2.Deleted = true
 	logTree2.DeleteTime = deleteTimePB
-	mapTree := proto.Clone(testonly.MapTree).(*trillian.Tree)
-	mapTree.TreeId = 30
-	mapTree.Deleted = true
-	mapTree.DeleteTime = deleteTimePB
 	badTS := proto.Clone(testonly.LogTree).(*trillian.Tree)
 	badTS.TreeId = 40
 	badTS.Deleted = true
@@ -258,7 +250,7 @@ func TestDeletedTreeGC_RunOnceErrors(t *testing.T) {
 			desc: "snapshotCommitErr",
 			listTrees: listTreesSpec{
 				commitErr: errors.New("commit err"),
-				trees:     []*trillian.Tree{logTree1, logTree2, mapTree},
+				trees:     []*trillian.Tree{logTree1, logTree2},
 			},
 			wantErrs: []string{"commit err"},
 		},
@@ -301,19 +293,17 @@ func TestDeletedTreeGC_RunOnceErrors(t *testing.T) {
 		{
 			// logTree1 = delete successful
 			// logTree2 = delete error
-			// mapTree  = commit error
 			// badTS    = timestamp parse error (no HardDeleteTree() call)
 			desc: "multipleErrors",
 			listTrees: listTreesSpec{
-				trees: []*trillian.Tree{logTree1, logTree2, mapTree, badTS},
+				trees: []*trillian.Tree{logTree1, logTree2, badTS},
 			},
 			hardDeleteTree: []hardDeleteTreeSpec{
 				{treeID: logTree1.TreeId},
 				{deleteErr: errors.New("delete err"), treeID: logTree2.TreeId},
-				{commitErr: errors.New("commit err"), treeID: mapTree.TreeId},
 			},
 			wantCount: 1,
-			wantErrs:  []string{"delete err", "commit err", "error parsing delete_time"},
+			wantErrs:  []string{"delete err", "error parsing delete_time"},
 		},
 	}
 

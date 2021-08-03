@@ -19,7 +19,6 @@ import (
 	"github.com/google/btree"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/storagepb"
-	stree "github.com/google/trillian/storage/tree"
 )
 
 // This file contains utilities that are not part of the Storage API contracts but may
@@ -33,13 +32,13 @@ func Dump(t *btree.BTree) {
 	})
 }
 
-// DumpSubtrees will traverse the the BTree and execute a callback on each subtree proto
+// DumpSubtrees will traverse the BTree and execute a callback on each subtree proto
 // that it contains. The traversal will be 'in order' according to the BTree keys, which
 // may not be useful at the application level.
 func DumpSubtrees(ls storage.LogStorage, treeID int64, callback func(string, *storagepb.SubtreeProto)) {
 	m := ls.(*memoryLogStorage)
 	tree := m.trees[treeID]
-	pi := subtreeKey(treeID, 0, stree.NodeID{})
+	pi := subtreeKey(treeID, 0, []byte{})
 
 	tree.store.AscendGreaterOrEqual(pi, func(bi btree.Item) bool {
 		i := bi.(*kv)

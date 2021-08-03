@@ -20,12 +20,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keyspb"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/testonly"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 const selectTreeControlByID = "SELECT SigningEnabled, SequencingEnabled, SequenceIntervalSeconds FROM TreeControl WHERE TreeId = ?"
@@ -107,23 +106,6 @@ func TestAdminTX_TreeWithNulls(t *testing.T) {
 			},
 		},
 		{
-			// ListTreeIDs *shouldn't* care about other columns, but let's test it just
-			// in case.
-			desc: "ListTreeIDs",
-			fn: func(ctx context.Context, tx storage.AdminTX) error {
-				ids, err := tx.ListTreeIDs(ctx, false /* includeDeleted */)
-				if err != nil {
-					return err
-				}
-				for _, id := range ids {
-					if id == treeID {
-						return nil
-					}
-				}
-				return fmt.Errorf("ID not found: %v", treeID)
-			},
-		},
-		{
 			desc: "ListTrees",
 			fn: func(ctx context.Context, tx storage.AdminTX) error {
 				trees, err := tx.ListTrees(ctx, false /* includeDeleted */)
@@ -151,7 +133,7 @@ func TestAdminTX_StorageSettingsNotSupported(t *testing.T) {
 	s := NewAdminStorage(DB)
 	ctx := context.Background()
 
-	settings, err := ptypes.MarshalAny(&keyspb.PEMKeyFile{})
+	settings, err := anypb.New(&trillian.Tree{})
 	if err != nil {
 		t.Fatalf("Error marshaling proto: %v", err)
 	}

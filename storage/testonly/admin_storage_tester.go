@@ -16,116 +16,38 @@ package testonly
 
 import (
 	"context"
-	"crypto"
 	"fmt"
 	"reflect"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
-	"github.com/golang/protobuf/ptypes/any"
-	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys"
-	"github.com/google/trillian/crypto/keys/pem"
-	"github.com/google/trillian/crypto/keyspb"
 	"github.com/google/trillian/storage"
-	"github.com/google/trillian/testonly"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	ktestonly "github.com/google/trillian/crypto/keys/testonly"
-	spb "github.com/google/trillian/crypto/sigpb"
-
-	_ "github.com/google/trillian/crypto/keys/der/proto" // PrivateKey proto handler
-	_ "github.com/google/trillian/crypto/keys/pem/proto" // PEMKeyFile proto handler
-	_ "github.com/google/trillian/merkle/maphasher"      // TEST_MAP_HASHER
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
-
-const (
-	privateKeyPass = "towel"
-	privateKeyPEM  = `
------BEGIN EC PRIVATE KEY-----
-Proc-Type: 4,ENCRYPTED
-DEK-Info: DES-CBC,D95ECC664FF4BDEC
-
-Xy3zzHFwlFwjE8L1NCngJAFbu3zFf4IbBOCsz6Fa790utVNdulZncNCl2FMK3U2T
-sdoiTW8ymO+qgwcNrqvPVmjFRBtkN0Pn5lgbWhN/aK3TlS9IYJ/EShbMUzjgVzie
-S9+/31whWcH/FLeLJx4cBzvhgCtfquwA+s5ojeLYYsk=
------END EC PRIVATE KEY-----`
-	// PublicKeyPEM is the public key for: LogTree and PreorderedLogTree
-	PublicKeyPEM = `
------BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEywnWicNEQ8bn3GXcGpA+tiU4VL70
-Ws9xezgQPrg96YGsFrF6KYG68iqyHDlQ+4FWuKfGKXHn3ooVtB/pfawb5Q==
------END PUBLIC KEY-----`
-)
-
-// mustMarshalAny panics if ptypes.MarshalAny fails.
-func mustMarshalAny(pb proto.Message) *any.Any {
-	value, err := ptypes.MarshalAny(pb)
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
 
 var (
 	// LogTree is a valid, LOG-type trillian.Tree for tests.
 	LogTree = &trillian.Tree{
-		TreeState:          trillian.TreeState_ACTIVE,
-		TreeType:           trillian.TreeType_LOG,
-		HashStrategy:       trillian.HashStrategy_RFC6962_SHA256,
-		HashAlgorithm:      spb.DigitallySigned_SHA256,
-		SignatureAlgorithm: spb.DigitallySigned_ECDSA,
-		DisplayName:        "Llamas Log",
-		Description:        "Registry of publicly-owned llamas",
-		PrivateKey: mustMarshalAny(&keyspb.PrivateKey{
-			Der: ktestonly.MustMarshalPrivatePEMToDER(privateKeyPEM, privateKeyPass),
-		}),
-		PublicKey: &keyspb.PublicKey{
-			Der: ktestonly.MustMarshalPublicPEMToDER(PublicKeyPEM),
-		},
-		MaxRootDuration: ptypes.DurationProto(0 * time.Millisecond),
+		TreeState:       trillian.TreeState_ACTIVE,
+		TreeType:        trillian.TreeType_LOG,
+		DisplayName:     "Llamas Log",
+		Description:     "Registry of publicly-owned llamas",
+		MaxRootDuration: durationpb.New(0 * time.Millisecond),
 	}
 
 	// PreorderedLogTree is a valid, PREORDERED_LOG-type trillian.Tree for tests.
 	PreorderedLogTree = &trillian.Tree{
-		TreeState:          trillian.TreeState_ACTIVE,
-		TreeType:           trillian.TreeType_PREORDERED_LOG,
-		HashStrategy:       trillian.HashStrategy_RFC6962_SHA256,
-		HashAlgorithm:      spb.DigitallySigned_SHA256,
-		SignatureAlgorithm: spb.DigitallySigned_ECDSA,
-		DisplayName:        "Pre-ordered Log",
-		Description:        "Mirror registry of publicly-owned llamas",
-		PrivateKey: mustMarshalAny(&keyspb.PrivateKey{
-			Der: ktestonly.MustMarshalPrivatePEMToDER(privateKeyPEM, privateKeyPass),
-		}),
-		PublicKey: &keyspb.PublicKey{
-			Der: ktestonly.MustMarshalPublicPEMToDER(PublicKeyPEM),
-		},
-		MaxRootDuration: ptypes.DurationProto(0 * time.Millisecond),
-	}
-
-	// MapTree is a valid, MAP-type trillian.Tree for tests.
-	MapTree = &trillian.Tree{
-		TreeState:          trillian.TreeState_ACTIVE,
-		TreeType:           trillian.TreeType_MAP,
-		HashStrategy:       trillian.HashStrategy_TEST_MAP_HASHER,
-		HashAlgorithm:      spb.DigitallySigned_SHA256,
-		SignatureAlgorithm: spb.DigitallySigned_ECDSA,
-		DisplayName:        "Llamas Map",
-		Description:        "Key Transparency map for all your digital llama needs.",
-		PrivateKey: mustMarshalAny(&keyspb.PrivateKey{
-			Der: ktestonly.MustMarshalPrivatePEMToDER(testonly.DemoPrivateKey, testonly.DemoPrivateKeyPass),
-		}),
-		PublicKey: &keyspb.PublicKey{
-			Der: ktestonly.MustMarshalPublicPEMToDER(testonly.DemoPublicKey),
-		},
-		MaxRootDuration: ptypes.DurationProto(0 * time.Millisecond),
+		TreeState:       trillian.TreeState_ACTIVE,
+		TreeType:        trillian.TreeType_PREORDERED_LOG,
+		DisplayName:     "Pre-ordered Log",
+		Description:     "Mirror registry of publicly-owned llamas",
+		MaxRootDuration: durationpb.New(0 * time.Millisecond),
 	}
 )
 
@@ -158,7 +80,6 @@ func (tester *AdminStorageTester) TestCreateTree(t *testing.T) {
 	invalidTree.TreeType = trillian.TreeType_UNKNOWN_TREE_TYPE
 
 	validTree1 := proto.Clone(LogTree).(*trillian.Tree)
-	validTree2 := proto.Clone(MapTree).(*trillian.Tree)
 	validTree3 := proto.Clone(PreorderedLogTree).(*trillian.Tree)
 
 	validTreeWithoutOptionals := proto.Clone(LogTree).(*trillian.Tree)
@@ -178,10 +99,6 @@ func (tester *AdminStorageTester) TestCreateTree(t *testing.T) {
 		{
 			desc: "validTree1",
 			tree: validTree1,
-		},
-		{
-			desc: "validTree2",
-			tree: validTree2,
 		},
 		{
 			desc: "validTree3",
@@ -209,7 +126,7 @@ func (tester *AdminStorageTester) TestCreateTree(t *testing.T) {
 
 			createTime := newTree.CreateTime
 			updateTime := newTree.UpdateTime
-			if _, err := ptypes.Timestamp(createTime); err != nil {
+			if err := createTime.CheckValid(); err != nil {
 				t.Errorf("%v: CreateTime malformed after creation: %v", test.desc, newTree)
 				return
 			}
@@ -247,7 +164,7 @@ func (tester *AdminStorageTester) TestUpdateTree(t *testing.T) {
 	ctx := context.Background()
 	s := tester.NewAdminStorage()
 
-	unrelatedTree := makeTreeOrFail(ctx, s, spec{Tree: MapTree}, t.Fatalf)
+	unrelatedTree := makeTreeOrFail(ctx, s, spec{Tree: PreorderedLogTree}, t.Fatalf)
 
 	referenceLog := proto.Clone(LogTree).(*trillian.Tree)
 	validLog := proto.Clone(referenceLog).(*trillian.Tree)
@@ -272,33 +189,7 @@ func (tester *AdminStorageTester) TestUpdateTree(t *testing.T) {
 	}
 
 	readonlyChangedFunc := func(tree *trillian.Tree) {
-		tree.TreeType = trillian.TreeType_MAP
-	}
-
-	referenceMap := proto.Clone(MapTree).(*trillian.Tree)
-	validMap := proto.Clone(referenceMap).(*trillian.Tree)
-	validMap.DisplayName = "Updated Map"
-	validMapFunc := func(tree *trillian.Tree) {
-		tree.DisplayName = validMap.DisplayName
-	}
-
-	newPrivateKey := &empty.Empty{}
-	privateKeyChangedButKeyMaterialSameTree := tweakedCopy(LogTree, func(tree *trillian.Tree) {
-		tree.PrivateKey = testonly.MustMarshalAny(t, newPrivateKey)
-	})
-	keys.RegisterHandler(newPrivateKey, func(ctx context.Context, pb proto.Message) (crypto.Signer, error) {
-		return pem.UnmarshalPrivateKey(privateKeyPEM, privateKeyPass)
-	})
-	defer keys.UnregisterHandler(newPrivateKey)
-
-	privateKeyChangedButKeyMaterialSameFunc := func(tree *trillian.Tree) {
-		tree.PrivateKey = privateKeyChangedButKeyMaterialSameTree.PrivateKey
-	}
-
-	privateKeyChangedAndKeyMaterialDifferentFunc := func(tree *trillian.Tree) {
-		tree.PrivateKey = testonly.MustMarshalAny(t, &keyspb.PrivateKey{
-			Der: ktestonly.MustMarshalPrivatePEMToDER(testonly.DemoPrivateKey, testonly.DemoPrivateKeyPass),
-		})
+		tree.TreeType = trillian.TreeType_PREORDERED_LOG
 	}
 
 	// Test for an unknown tree outside the loop: it makes the test logic simpler
@@ -336,24 +227,6 @@ func (tester *AdminStorageTester) TestUpdateTree(t *testing.T) {
 			updateFunc: readonlyChangedFunc,
 			wantErr:    true,
 		},
-		{
-			desc:       "validMap",
-			create:     referenceMap,
-			updateFunc: validMapFunc,
-			want:       validMap,
-		},
-		{
-			desc:       "privateKeyChangedButKeyMaterialSame",
-			create:     referenceLog,
-			updateFunc: privateKeyChangedButKeyMaterialSameFunc,
-			want:       privateKeyChangedButKeyMaterialSameTree,
-		},
-		{
-			desc:       "privateKeyChangedAndKeyMaterialDifferent",
-			create:     referenceLog,
-			updateFunc: privateKeyChangedAndKeyMaterialDifferentFunc,
-			wantErr:    true,
-		},
 	}
 	for _, test := range tests {
 		createdTree, err := storage.CreateTree(ctx, s, test.create)
@@ -376,14 +249,14 @@ func (tester *AdminStorageTester) TestUpdateTree(t *testing.T) {
 		if !proto.Equal(createdTree.CreateTime, updatedTree.CreateTime) {
 			t.Errorf("%v: CreateTime = %v, want = %v", test.desc, updatedTree.CreateTime, createdTree.CreateTime)
 		}
-		createUpdateTime, err := ptypes.Timestamp(createdTree.UpdateTime)
-		if err != nil {
+		if err := createdTree.UpdateTime.CheckValid(); err != nil {
 			t.Errorf("%v: createdTree.UpdateTime malformed: %v", test.desc, err)
 		}
-		updatedUpdateTime, err := ptypes.Timestamp(updatedTree.UpdateTime)
-		if err != nil {
+		if err := updatedTree.UpdateTime.CheckValid(); err != nil {
 			t.Errorf("%v: updatedTree.UpdateTime malformed: %v", test.desc, err)
 		}
+		createUpdateTime := createdTree.UpdateTime.AsTime()
+		updatedUpdateTime := updatedTree.UpdateTime.AsTime()
 		if createUpdateTime.After(updatedUpdateTime) {
 			t.Errorf("%v: UpdateTime = %v, want >= %v", test.desc, updatedTree.UpdateTime, createdTree.UpdateTime)
 		}
@@ -410,16 +283,13 @@ func (tester *AdminStorageTester) TestUpdateTree(t *testing.T) {
 	}
 }
 
-// TestListTrees tests both ListTreeIDs and ListTrees.
+// TestListTrees tests ListTrees.
 func (tester *AdminStorageTester) TestListTrees(t *testing.T) {
 	ctx := context.Background()
 	s := tester.NewAdminStorage()
 
 	run := func(desc string, includeDeleted bool, wantTrees []*trillian.Tree) {
 		if err := storage.RunInAdminSnapshot(ctx, s, func(tx storage.ReadOnlyAdminTX) error {
-			if err := runListTreeIDsTest(ctx, tx, includeDeleted, wantTrees); err != nil {
-				t.Errorf("%v: %v", desc, err)
-			}
 			if err := runListTreesTest(ctx, tx, includeDeleted, wantTrees); err != nil {
 				t.Errorf("%v: %v", desc, err)
 			}
@@ -439,28 +309,8 @@ func (tester *AdminStorageTester) TestListTrees(t *testing.T) {
 	activeLog := makeTreeOrFail(ctx, s, spec{Tree: LogTree}, t.Fatalf)
 	frozenLog := makeTreeOrFail(ctx, s, spec{Tree: LogTree, Frozen: true}, t.Fatalf)
 	deletedLog := makeTreeOrFail(ctx, s, spec{Tree: LogTree, Deleted: true}, t.Fatalf)
-	activeMap := makeTreeOrFail(ctx, s, spec{Tree: MapTree}, t.Fatalf)
-	run("multipleTrees", false /* includeDeleted */, []*trillian.Tree{activeLog, frozenLog, activeMap})
-	run("multipleTreesDeleted", true /* includeDeleted */, []*trillian.Tree{activeLog, frozenLog, deletedLog, activeMap})
-}
-
-func runListTreeIDsTest(ctx context.Context, tx storage.ReadOnlyAdminTX, includeDeleted bool, wantTrees []*trillian.Tree) error {
-	got, err := tx.ListTreeIDs(ctx, includeDeleted)
-	if err != nil {
-		return fmt.Errorf("ListTreeIDs() returned err = %v", err)
-	}
-
-	want := make([]int64, 0, len(wantTrees))
-	for _, tree := range wantTrees {
-		want = append(want, tree.TreeId)
-	}
-
-	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
-	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
-	if diff := cmp.Diff(got, want); diff != "" {
-		return fmt.Errorf("post-ListTreeIDs() diff (-got +want):\n%v", diff)
-	}
-	return nil
+	run("multipleTrees", false /* includeDeleted */, []*trillian.Tree{activeLog, frozenLog})
+	run("multipleTreesDeleted", true /* includeDeleted */, []*trillian.Tree{activeLog, frozenLog, deletedLog})
 }
 
 func runListTreesTest(ctx context.Context, tx storage.ReadOnlyAdminTX, includeDeleted bool, wantTrees []*trillian.Tree) error {
@@ -491,14 +341,12 @@ func (tester *AdminStorageTester) TestSoftDeleteTree(t *testing.T) {
 	s := tester.NewAdminStorage()
 
 	logTree := makeTreeOrFail(ctx, s, spec{Tree: LogTree}, t.Fatalf)
-	mapTree := makeTreeOrFail(ctx, s, spec{Tree: MapTree}, t.Fatalf)
 
 	tests := []struct {
 		desc string
 		tree *trillian.Tree
 	}{
 		{desc: "logTree", tree: logTree},
-		{desc: "mapTree", tree: mapTree},
 	}
 	for _, test := range tests {
 		deletedTree, err := storage.SoftDeleteTree(ctx, s, test.tree.TreeId)
@@ -553,7 +401,6 @@ func (tester *AdminStorageTester) TestHardDeleteTree(t *testing.T) {
 
 	logTree := makeTreeOrFail(ctx, s, spec{Tree: LogTree, Deleted: true}, t.Fatalf)
 	frozenTree := makeTreeOrFail(ctx, s, spec{Tree: LogTree, Deleted: true, Frozen: true}, t.Fatalf)
-	mapTree := makeTreeOrFail(ctx, s, spec{Tree: MapTree, Deleted: true}, t.Fatalf)
 
 	tests := []struct {
 		desc   string
@@ -561,7 +408,6 @@ func (tester *AdminStorageTester) TestHardDeleteTree(t *testing.T) {
 	}{
 		{desc: "logTree", treeID: logTree.TreeId},
 		{desc: "frozenTree", treeID: frozenTree.TreeId},
-		{desc: "mapTree", treeID: mapTree.TreeId},
 	}
 	for _, test := range tests {
 		if err := storage.HardDeleteTree(ctx, s, test.treeID); err != nil {

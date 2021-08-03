@@ -25,8 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/trillian/merkle/maphasher"
-	"github.com/google/trillian/storage/tree"
+	"github.com/google/trillian/merkle/coniks"
+	"github.com/google/trillian/merkle/smt/node"
 	"github.com/google/trillian/testonly"
 	"golang.org/x/sync/errgroup"
 )
@@ -34,18 +34,18 @@ import (
 const treeID = int64(0)
 
 var (
-	hasher = maphasher.Default
+	hasher = coniks.Default
 	b64    = testonly.MustDecodeBase64
 )
 
 func TestWriterSplit(t *testing.T) {
-	ids := []tree.NodeID2{
-		tree.NewNodeID2("\x01\x00\x00\x00", 32),
-		tree.NewNodeID2("\x00\x00\x00\x00", 32),
-		tree.NewNodeID2("\x02\x00\x00\x00", 32),
-		tree.NewNodeID2("\x03\x00\x00\x00", 32),
-		tree.NewNodeID2("\x02\x00\x01\x00", 32),
-		tree.NewNodeID2("\x03\x00\x00\x00", 32),
+	ids := []node.ID{
+		node.NewID("\x01\x00\x00\x00", 32),
+		node.NewID("\x00\x00\x00\x00", 32),
+		node.NewID("\x02\x00\x00\x00", 32),
+		node.NewID("\x03\x00\x00\x00", 32),
+		node.NewID("\x02\x00\x01\x00", 32),
+		node.NewID("\x03\x00\x00\x00", 32),
 	}
 	// Generate some nodes based on IDs.
 	all := make([]Node, len(ids))
@@ -61,15 +61,23 @@ func TestWriterSplit(t *testing.T) {
 		err   bool
 	}{
 		{desc: "dup", nodes: all, err: true},
-		{desc: "wrong-len", nodes: []Node{{ID: tree.NewNodeID2("ab", 10)}}, err: true},
-		{desc: "ok-24", split: 24, nodes: all[:5],
-			want: [][]Node{{all[1]}, {all[0]}, {all[2]}, {all[4]}, {all[3]}}},
-		{desc: "ok-21", split: 21, nodes: all[:5],
-			want: [][]Node{{all[1]}, {all[0]}, {all[2], all[4]}, {all[3]}}},
-		{desc: "ok-16", split: 16, nodes: all[:5],
-			want: [][]Node{{all[1]}, {all[0]}, {all[2], all[4]}, {all[3]}}},
-		{desc: "ok-0", split: 0, nodes: all[:5],
-			want: [][]Node{{all[1], all[0], all[2], all[4], all[3]}}},
+		{desc: "wrong-len", nodes: []Node{{ID: node.NewID("ab", 10)}}, err: true},
+		{
+			desc: "ok-24", split: 24, nodes: all[:5],
+			want: [][]Node{{all[1]}, {all[0]}, {all[2]}, {all[4]}, {all[3]}},
+		},
+		{
+			desc: "ok-21", split: 21, nodes: all[:5],
+			want: [][]Node{{all[1]}, {all[0]}, {all[2], all[4]}, {all[3]}},
+		},
+		{
+			desc: "ok-16", split: 16, nodes: all[:5],
+			want: [][]Node{{all[1]}, {all[0]}, {all[2], all[4]}, {all[3]}},
+		},
+		{
+			desc: "ok-0", split: 0, nodes: all[:5],
+			want: [][]Node{{all[1], all[0], all[2], all[4], all[3]}},
+		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			nodes := make([]Node, len(tc.nodes))
@@ -102,16 +110,16 @@ func TestWriterWrite(t *testing.T) {
 		{
 			desc:     "single-leaf",
 			nodes:    []Node{all[0]},
-			wantRoot: b64("PPI818D5CiUQQMZulH58LikjxeOFWw2FbnGM0AdVHWA="),
+			wantRoot: b64("KKBw4yrtfa5Ugm9jo4SHZ79wJy4bUAW1jLPyMOJoAPQ="),
 		},
 		{
 			desc:     "multi-leaf",
 			nodes:    []Node{all[0], all[1], all[2]},
-			wantRoot: b64("Ms8A+VeDImofprfgq7Hoqh9cw+YrD/P/qibTmCm5JvQ="),
+			wantRoot: b64("l/IJC6+DcqpNvnQ+HdAwwmXEXfmQ6Ha9/lOD7smeIVc="),
 		},
 
 		{desc: "empty", wantErr: "nothing to write"},
-		{desc: "unaligned", nodes: []Node{{ID: tree.NewNodeID2("ab", 10)}}, wantErr: "unexpected depth"},
+		{desc: "unaligned", nodes: []Node{{ID: node.NewID("ab", 10)}}, wantErr: "unexpected depth"},
 		{desc: "dup", nodes: []Node{all[0], all[0]}, wantErr: "duplicate ID"},
 		{desc: "2-shards", split: 128, nodes: []Node{all[0], all[1]}, wantErr: "writing across"},
 		{desc: "get-err", acc: &testAccessor{get: errors.New("fail")}, nodes: []Node{all[0]}, wantErr: "fail"},
@@ -168,8 +176,9 @@ func testWriterBigBatch(t testing.TB) {
 	rootUpd := update(ctx, t, w, &testAccessor{}, nodes)
 
 	// Calculated using Python code from the original Revocation Transparency
-	// doc: https://www.links.org/files/RevocationTransparency.pdf.
-	want := b64("Av30xkERsepT6F/AgbZX3sp91TUmV1TKaXE6QPFfUZA=")
+	// doc: https://www.links.org/files/RevocationTransparency.pdf, but using the
+	// CONIKS hasher instead.
+	want := b64("P2SiYPpD858dVfAIG5RW0dxKKm7ZQr6DrhVIMDBWcJY=")
 	if got := rootUpd.Hash; !bytes.Equal(got, want) {
 		t.Errorf("root mismatch: got %x, want %x", got, want)
 	}
@@ -184,14 +193,14 @@ func TestWriterBigBatchMultipleWrites(t *testing.T) {
 	const batchSize = 1024
 	const numBatches = 4
 	roots := [numBatches][]byte{
-		b64("7R5uvGy5MJ2Y8xrQr4/mnn3aPw39vYscghmg9KBJaKc="),
-		b64("VTrPStz/chupeOjzAYFIHGfhiMT8yN+v589jxWZO1F0="),
-		b64("nRvRV/NfC06rXGI5cKeTieyyp/69bHoMcVDs0AtZzus="),
-		b64("Av30xkERsepT6F/AgbZX3sp91TUmV1TKaXE6QPFfUZA="),
+		b64("aAMq3tm3aChuTrjocEp9pau/rERbY3ClQ5iLuvkOwAw="),
+		b64("8F5CF69Dkhebse22dhPvmwxaXGESqtKfQB3A8rMLh9k="),
+		b64("f1b6zuA5OuG2Joedcq0XYm9AwGUw//C2ZAyGxqOv+G4="),
+		b64("P2SiYPpD858dVfAIG5RW0dxKKm7ZQr6DrhVIMDBWcJY="),
 	}
 
 	w := NewWriter(treeID, hasher, 256, 8)
-	acc := &testAccessor{h: make(map[tree.NodeID2][]byte), save: true}
+	acc := &testAccessor{h: make(map[node.ID][]byte), save: true}
 
 	for i := 0; i < numBatches; i++ {
 		nodes := make([]Node, 0, batchSize)
@@ -244,20 +253,21 @@ func update(ctx context.Context, t testing.TB, w *Writer, acc NodeBatchAccessor,
 // 256-bit map key based on SHA256 of the given key string.
 func genNode(key, value string) Node {
 	key256 := sha256.Sum256([]byte(key))
-	hash := hasher.HashLeaf(treeID, key256[:], []byte(value))
-	return Node{ID: tree.NewNodeID2(string(key256[:]), 256), Hash: hash}
+	id := node.NewID(string(key256[:]), uint(len(key256)*8))
+	hash := hasher.HashLeaf(treeID, id, []byte(value))
+	return Node{ID: id, Hash: hash}
 }
 
 // testAccessor implements NodeBatchAccessor for testing purposes.
 type testAccessor struct {
 	mu   sync.RWMutex // Guards the h map.
-	h    map[tree.NodeID2][]byte
+	h    map[node.ID][]byte
 	save bool  // Persist node updates in this accessor.
 	get  error // The error returned by Get.
 	set  error // The error returned by Set.
 }
 
-func (t *testAccessor) Get(ctx context.Context, ids []tree.NodeID2) (map[tree.NodeID2][]byte, error) {
+func (t *testAccessor) Get(ctx context.Context, ids []node.ID) (map[node.ID][]byte, error) {
 	if err := t.get; err != nil {
 		return nil, err
 	} else if !t.save {
@@ -265,7 +275,7 @@ func (t *testAccessor) Get(ctx context.Context, ids []tree.NodeID2) (map[tree.No
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	h := make(map[tree.NodeID2][]byte, len(ids))
+	h := make(map[node.ID][]byte, len(ids))
 	for _, id := range ids {
 		if hash, ok := t.h[id]; ok {
 			h[id] = hash

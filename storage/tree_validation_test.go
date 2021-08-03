@@ -19,40 +19,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
-	"github.com/golang/protobuf/ptypes/any"
-	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keyspb"
-	"github.com/google/trillian/crypto/sigpb"
-	"github.com/google/trillian/testonly"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	ktestonly "github.com/google/trillian/crypto/keys/testonly"
-
-	_ "github.com/google/trillian/crypto/keys/der/proto"
-	_ "github.com/google/trillian/crypto/keys/pem/proto"
-)
-
-const (
-	privateKeyPath = "../testdata/log-rpc-server.privkey.pem"
-	privateKeyPass = "towel"
-	privateKeyPEM  = `
------BEGIN EC PRIVATE KEY-----
-Proc-Type: 4,ENCRYPTED
-DEK-Info: DES-CBC,D95ECC664FF4BDEC
-
-Xy3zzHFwlFwjE8L1NCngJAFbu3zFf4IbBOCsz6Fa790utVNdulZncNCl2FMK3U2T
-sdoiTW8ymO+qgwcNrqvPVmjFRBtkN0Pn5lgbWhN/aK3TlS9IYJ/EShbMUzjgVzie
-S9+/31whWcH/FLeLJx4cBzvhgCtfquwA+s5ojeLYYsk=
------END EC PRIVATE KEY-----`
-	publicKeyPEM = `
------BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEywnWicNEQ8bn3GXcGpA+tiU4VL70
-Ws9xezgQPrg96YGsFrF6KYG68iqyHDlQ+4FWuKfGKXHn3ooVtB/pfawb5Q==
------END PUBLIC KEY-----`
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestValidateTreeForCreation(t *testing.T) {
@@ -61,7 +34,7 @@ func TestValidateTreeForCreation(t *testing.T) {
 	valid1 := newTree()
 
 	valid2 := newTree()
-	valid2.TreeType = trillian.TreeType_MAP
+	valid2.TreeType = trillian.TreeType_PREORDERED_LOG
 
 	invalidState1 := newTree()
 	invalidState1.TreeState = trillian.TreeState_UNKNOWN_TREE_STATE
@@ -71,35 +44,11 @@ func TestValidateTreeForCreation(t *testing.T) {
 	invalidType := newTree()
 	invalidType.TreeType = trillian.TreeType_UNKNOWN_TREE_TYPE
 
-	invalidHashStrategy := newTree()
-	invalidHashStrategy.HashStrategy = trillian.HashStrategy_UNKNOWN_HASH_STRATEGY
-
-	invalidHashAlgorithm := newTree()
-	invalidHashAlgorithm.HashAlgorithm = sigpb.DigitallySigned_NONE
-
-	invalidSignatureAlgorithm := newTree()
-	invalidSignatureAlgorithm.SignatureAlgorithm = sigpb.DigitallySigned_ANONYMOUS
-
-	unsupportedPrivateKey := newTree()
-	unsupportedPrivateKey.PrivateKey.TypeUrl = "urn://unknown-type"
-
-	invalidPrivateKey := newTree()
-	invalidPrivateKey.PrivateKey.Value = []byte("foobar")
-
-	nilPrivateKey := newTree()
-	nilPrivateKey.PrivateKey = nil
-
-	invalidPublicKey := newTree()
-	invalidPublicKey.PublicKey.Der = []byte("foobar")
-
-	nilPublicKey := newTree()
-	nilPublicKey.PublicKey = nil
-
 	invalidSettings := newTree()
-	invalidSettings.StorageSettings = &any.Any{Value: []byte("foobar")}
+	invalidSettings.StorageSettings = &anypb.Any{Value: []byte("foobar")}
 
 	// As long as settings is a valid proto, the type doesn't matter for this test.
-	settings, err := ptypes.MarshalAny(&keyspb.PEMKeyFile{})
+	settings, err := anypb.New(&trillian.Tree{})
 	if err != nil {
 		t.Fatalf("Error marshaling proto: %v", err)
 	}
@@ -110,13 +59,13 @@ func TestValidateTreeForCreation(t *testing.T) {
 	nilRootDuration.MaxRootDuration = nil
 
 	invalidRootDuration := newTree()
-	invalidRootDuration.MaxRootDuration = ptypes.DurationProto(-1 * time.Second)
+	invalidRootDuration.MaxRootDuration = durationpb.New(-1 * time.Second)
 
 	deletedTree := newTree()
 	deletedTree.Deleted = true
 
 	deleteTimeTree := newTree()
-	deleteTimeTree.DeleteTime = ptypes.TimestampNow()
+	deleteTimeTree.DeleteTime = timestamppb.Now()
 
 	tests := []struct {
 		desc    string
@@ -149,46 +98,6 @@ func TestValidateTreeForCreation(t *testing.T) {
 		{
 			desc:    "invalidType",
 			tree:    invalidType,
-			wantErr: true,
-		},
-		{
-			desc:    "invalidHashStrategy",
-			tree:    invalidHashStrategy,
-			wantErr: true,
-		},
-		{
-			desc:    "invalidHashAlgorithm",
-			tree:    invalidHashAlgorithm,
-			wantErr: true,
-		},
-		{
-			desc:    "invalidSignatureAlgorithm",
-			tree:    invalidSignatureAlgorithm,
-			wantErr: true,
-		},
-		{
-			desc:    "unsupportedPrivateKey",
-			tree:    unsupportedPrivateKey,
-			wantErr: true,
-		},
-		{
-			desc:    "invalidPrivateKey",
-			tree:    invalidPrivateKey,
-			wantErr: true,
-		},
-		{
-			desc:    "nilPrivateKey",
-			tree:    nilPrivateKey,
-			wantErr: true,
-		},
-		{
-			desc:    "invalidPublicKey",
-			tree:    invalidPublicKey,
-			wantErr: true,
-		},
-		{
-			desc:    "nilPublicKey",
-			tree:    nilPublicKey,
 			wantErr: true,
 		},
 		{
@@ -258,7 +167,7 @@ func TestValidateTreeForUpdate(t *testing.T) {
 			desc: "validSettings",
 			updatefn: func(tree *trillian.Tree) {
 				// As long as settings is a valid proto, the type doesn't matter for this test.
-				settings, err := ptypes.MarshalAny(&keyspb.PEMKeyFile{})
+				settings, err := anypb.New(&trillian.Tree{})
 				if err != nil {
 					t.Fatalf("Error marshaling proto: %v", err)
 				}
@@ -268,63 +177,20 @@ func TestValidateTreeForUpdate(t *testing.T) {
 		{
 			desc: "invalidSettings",
 			updatefn: func(tree *trillian.Tree) {
-				tree.StorageSettings = &any.Any{Value: []byte("foobar")}
+				tree.StorageSettings = &anypb.Any{Value: []byte("foobar")}
 			},
 			wantErr: true,
 		},
 		{
 			desc: "validRootDuration",
 			updatefn: func(tree *trillian.Tree) {
-				tree.MaxRootDuration = ptypes.DurationProto(200 * time.Millisecond)
+				tree.MaxRootDuration = durationpb.New(200 * time.Millisecond)
 			},
 		},
 		{
 			desc: "invalidRootDuration",
 			updatefn: func(tree *trillian.Tree) {
-				tree.MaxRootDuration = ptypes.DurationProto(-200 * time.Millisecond)
-			},
-			wantErr: true,
-		},
-		{
-			desc: "differentPrivateKeyProtoButSameKeyMaterial",
-			updatefn: func(tree *trillian.Tree) {
-				key, err := ptypes.MarshalAny(&keyspb.PrivateKey{
-					Der: ktestonly.MustMarshalPrivatePEMToDER(privateKeyPEM, privateKeyPass),
-				})
-				if err != nil {
-					panic(err)
-				}
-				tree.PrivateKey = key
-			},
-		},
-		{
-			desc: "differentPrivateKeyProtoAndDifferentKeyMaterial",
-			updatefn: func(tree *trillian.Tree) {
-				key, err := ptypes.MarshalAny(&keyspb.PrivateKey{
-					Der: ktestonly.MustMarshalPrivatePEMToDER(testonly.DemoPrivateKey, testonly.DemoPrivateKeyPass),
-				})
-				if err != nil {
-					panic(err)
-				}
-				tree.PrivateKey = key
-			},
-			wantErr: true,
-		},
-		{
-			desc: "unsupportedPrivateKeyProto",
-			updatefn: func(tree *trillian.Tree) {
-				key, err := ptypes.MarshalAny(&empty.Empty{})
-				if err != nil {
-					panic(err)
-				}
-				tree.PrivateKey = key
-			},
-			wantErr: true,
-		},
-		{
-			desc: "nilPrivateKeyProto",
-			updatefn: func(tree *trillian.Tree) {
-				tree.PrivateKey = nil
+				tree.MaxRootDuration = durationpb.New(-200 * time.Millisecond)
 			},
 			wantErr: true,
 		},
@@ -339,7 +205,7 @@ func TestValidateTreeForUpdate(t *testing.T) {
 		{
 			desc: "TreeType",
 			updatefn: func(tree *trillian.Tree) {
-				tree.TreeType = trillian.TreeType_MAP
+				tree.TreeType = trillian.TreeType_PREORDERED_LOG
 			},
 			wantErr: true,
 		},
@@ -370,37 +236,16 @@ func TestValidateTreeForUpdate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			desc: "HashStrategy",
-			updatefn: func(tree *trillian.Tree) {
-				tree.HashStrategy = trillian.HashStrategy_UNKNOWN_HASH_STRATEGY
-			},
-			wantErr: true,
-		},
-		{
-			desc: "HashAlgorithm",
-			updatefn: func(tree *trillian.Tree) {
-				tree.HashAlgorithm = sigpb.DigitallySigned_NONE
-			},
-			wantErr: true,
-		},
-		{
-			desc: "SignatureAlgorithm",
-			updatefn: func(tree *trillian.Tree) {
-				tree.SignatureAlgorithm = sigpb.DigitallySigned_RSA
-			},
-			wantErr: true,
-		},
-		{
 			desc: "CreateTime",
 			updatefn: func(tree *trillian.Tree) {
-				tree.CreateTime, _ = ptypes.TimestampProto(time.Now())
+				tree.CreateTime = timestamppb.New(time.Now())
 			},
 			wantErr: true,
 		},
 		{
 			desc: "UpdateTime",
 			updatefn: func(tree *trillian.Tree) {
-				tree.UpdateTime, _ = ptypes.TimestampProto(time.Now())
+				tree.UpdateTime = timestamppb.New(time.Now())
 			},
 			wantErr: true,
 		},
@@ -411,7 +256,7 @@ func TestValidateTreeForUpdate(t *testing.T) {
 		},
 		{
 			desc:     "DeleteTime",
-			updatefn: func(tree *trillian.Tree) { tree.DeleteTime = ptypes.TimestampNow() },
+			updatefn: func(tree *trillian.Tree) { tree.DeleteTime = timestamppb.Now() },
 			wantErr:  true,
 		},
 	}
@@ -439,26 +284,11 @@ func TestValidateTreeForUpdate(t *testing.T) {
 
 // newTree returns a valid log tree for tests.
 func newTree() *trillian.Tree {
-	privateKey, err := ptypes.MarshalAny(&keyspb.PEMKeyFile{
-		Path:     privateKeyPath,
-		Password: privateKeyPass,
-	})
-	if err != nil {
-		panic(err)
-	}
-
 	return &trillian.Tree{
-		TreeState:          trillian.TreeState_ACTIVE,
-		TreeType:           trillian.TreeType_LOG,
-		HashStrategy:       trillian.HashStrategy_RFC6962_SHA256,
-		HashAlgorithm:      sigpb.DigitallySigned_SHA256,
-		SignatureAlgorithm: sigpb.DigitallySigned_ECDSA,
-		DisplayName:        "Llamas Log",
-		Description:        "Registry of publicly-owned llamas",
-		PrivateKey:         privateKey,
-		PublicKey: &keyspb.PublicKey{
-			Der: ktestonly.MustMarshalPublicPEMToDER(publicKeyPEM),
-		},
-		MaxRootDuration: ptypes.DurationProto(1000 * time.Millisecond),
+		TreeState:       trillian.TreeState_ACTIVE,
+		TreeType:        trillian.TreeType_LOG,
+		DisplayName:     "Llamas Log",
+		Description:     "Registry of publicly-owned llamas",
+		MaxRootDuration: durationpb.New(1000 * time.Millisecond),
 	}
 }

@@ -15,23 +15,16 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys/der"
 	"github.com/google/trillian/extension"
-	"github.com/google/trillian/merkle/hashers"
 	"github.com/google/trillian/storage"
-	"github.com/google/trillian/trees"
 	"google.golang.org/genproto/protobuf/field_mask"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	_ "github.com/google/trillian/merkle/rfc6962" // Make hashers available
 )
 
 // Server is an implementation of trillian.TrillianAdminServer.
@@ -64,9 +57,6 @@ func (s *Server) ListTrees(ctx context.Context, req *trillian.ListTreesRequest) 
 	if err != nil {
 		return nil, err
 	}
-	for _, tree := range resp {
-		redact(tree)
-	}
 	return &trillian.ListTreesResponse{Tree: resp}, nil
 }
 
@@ -76,7 +66,7 @@ func (s *Server) GetTree(ctx context.Context, req *trillian.GetTreeRequest) (*tr
 	if err != nil {
 		return nil, err
 	}
-	return redact(tree), nil
+	return tree, nil
 }
 
 // CreateTree implements trillian.TrillianAdminServer.CreateTree.
@@ -88,67 +78,8 @@ func (s *Server) CreateTree(ctx context.Context, req *trillian.CreateTreeRequest
 	if err := s.validateAllowedTreeType(tree.TreeType); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	switch tree.TreeType {
-	case trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG:
-		if _, err := hashers.NewLogHasher(tree.HashStrategy); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to create hasher for tree: %v", err.Error())
-		}
-	case trillian.TreeType_MAP:
-		if _, err := hashers.NewMapHasher(tree.HashStrategy); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to create hasher for tree: %v", err.Error())
-		}
-	default:
+	if tree.TreeType != trillian.TreeType_LOG && tree.TreeType != trillian.TreeType_PREORDERED_LOG {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tree type: %v", tree.TreeType)
-	}
-
-	// If a key specification was provided, generate a new key.
-	if req.KeySpec != nil {
-		if tree.PrivateKey != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "the tree.private_key and key_spec fields are mutually exclusive")
-		}
-		if tree.PublicKey != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "the tree.public_key and key_spec fields are mutually exclusive")
-		}
-		if s.registry.NewKeyProto == nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "key generation is not enabled")
-		}
-
-		keyProto, err := s.registry.NewKeyProto(ctx, req.KeySpec)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "failed to generate private key: %v", err.Error())
-		}
-
-		tree.PrivateKey, err = ptypes.MarshalAny(keyProto)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to marshal private key: %v", err.Error())
-		}
-	}
-
-	if tree.PrivateKey == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "tree.private_key or key_spec is required")
-	}
-
-	// Check that the tree.PrivateKey is valid by trying to get a signer.
-	signer, err := trees.Signer(ctx, tree)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to create signer for tree: %v", err.Error())
-	}
-
-	// Derive the public key that corresponds to the private key for this tree.
-	// The caller may have provided the public key, but for safety we shouldn't rely on it being correct.
-	publicKey, err := der.ToPublicProto(signer.Public())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal public key: %v", err.Error())
-	}
-
-	// If a public key was provided, check that it matches the one we derived. If it doesn't, this indicates a mistake by the caller.
-	if tree.PublicKey != nil && !bytes.Equal(tree.PublicKey.Der, publicKey.Der) {
-		return nil, status.Error(codes.InvalidArgument, "the public and private keys are not a pair")
-	}
-
-	// If no public key was provided, use the DER that we just marshaled.
-	if tree.PublicKey == nil {
-		tree.PublicKey = publicKey
 	}
 
 	// Clear generated fields, storage must set those
@@ -162,7 +93,7 @@ func (s *Server) CreateTree(ctx context.Context, req *trillian.CreateTreeRequest
 	if err != nil {
 		return nil, err
 	}
-	return redact(createdTree), nil
+	return createdTree, nil
 }
 
 func (s *Server) validateAllowedTreeType(tt trillian.TreeType) error {
@@ -198,7 +129,7 @@ func (s *Server) UpdateTree(ctx context.Context, req *trillian.UpdateTreeRequest
 	if err != nil {
 		return nil, err
 	}
-	return redact(updatedTree), nil
+	return updatedTree, nil
 }
 
 func applyUpdateMask(from, to *trillian.Tree, mask *field_mask.FieldMask) error {
@@ -219,8 +150,6 @@ func applyUpdateMask(from, to *trillian.Tree, mask *field_mask.FieldMask) error 
 			to.StorageSettings = from.StorageSettings
 		case "max_root_duration":
 			to.MaxRootDuration = from.MaxRootDuration
-		case "private_key":
-			to.PrivateKey = from.PrivateKey
 		default:
 			return status.Errorf(codes.InvalidArgument, "invalid update_mask path: %q", path)
 		}
@@ -234,7 +163,7 @@ func (s *Server) DeleteTree(ctx context.Context, req *trillian.DeleteTreeRequest
 	if err != nil {
 		return nil, err
 	}
-	return redact(tree), nil
+	return tree, nil
 }
 
 // UndeleteTree implements trillian.TrillianAdminServer.UndeleteTree.
@@ -243,11 +172,5 @@ func (s *Server) UndeleteTree(ctx context.Context, req *trillian.UndeleteTreeReq
 	if err != nil {
 		return nil, err
 	}
-	return redact(tree), nil
-}
-
-// redact removes sensitive information from t. Returns t for convenience.
-func redact(t *trillian.Tree) *trillian.Tree {
-	t.PrivateKey = nil
-	return t
+	return tree, nil
 }

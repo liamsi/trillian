@@ -23,7 +23,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/golang/glog"
@@ -32,6 +31,7 @@ import (
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/util/clock"
 	"github.com/google/trillian/util/election"
+	"golang.org/x/sync/semaphore"
 )
 
 var (
@@ -85,7 +85,7 @@ type OperationInfo struct {
 
 	// The following parameters are passed to individual Operations.
 
-	// BatchSize is the processing batch size to be passed to tasks run by this manager
+	// BatchSize is the batch size to be passed to tasks run by this manager.
 	BatchSize int
 	// TimeSource should be used by the Operation to allow mocking for tests.
 	TimeSource clock.TimeSource
@@ -93,7 +93,7 @@ type OperationInfo struct {
 	// The following parameters govern the overall scheduling of Operations
 	// by a OperationManager.
 
-	// Election-related configuration.
+	// Election-related configuration. Copied for each log.
 	ElectionConfig election.RunnerConfig
 
 	// RunInterval is the time between starting batches of processing.  If a
@@ -111,18 +111,24 @@ type OperationInfo struct {
 type OperationManager struct {
 	info OperationInfo
 
-	// logOperation is the task that gets run across active logs in the scheduling loop
+	// logOperation is the task that gets run for active logs.
 	logOperation Operation
 
-	// electionRunner tracks the goroutines that run per-log mastership elections
-	electionRunner      map[string]*election.Runner
+	// runnerWG groups all goroutines with election Runners.
+	runnerWG sync.WaitGroup
+	// runnerCancels contains cancel function for each logID election Runner.
+	runnerCancels map[string]context.CancelFunc
+	// pendingResignations delivers resignation requests from election Runners.
 	pendingResignations chan election.Resignation
-	runnerWG            sync.WaitGroup
-	tracker             *election.MasterTracker
-	lastHeld            []int64
-	// Cache of logID => name; assumed not to change during runtime
-	logNamesMutex sync.Mutex
-	logNames      map[int64]string
+
+	tracker *election.MasterTracker
+
+	// Cache of logID => name. Names are assumed not to change during runtime.
+	logNames map[int64]string
+	// A recent list of active logs that this instance is master for.
+	lastHeld []int64
+	// idsMutex guards logNames and lastHeld fields.
+	idsMutex sync.Mutex
 }
 
 // NewOperationManager creates a new OperationManager instance.
@@ -133,40 +139,28 @@ func NewOperationManager(info OperationInfo, logOperation Operation) *OperationM
 	if info.Timeout == 0 {
 		info.Timeout = DefaultTimeout
 	}
+	tracker := election.NewMasterTracker(nil, func(id string, v bool) {
+		val := 0.0
+		if v {
+			val = 1.0
+		}
+		isMaster.Set(val, id)
+	})
 	return &OperationManager{
 		info:                info,
 		logOperation:        logOperation,
-		electionRunner:      make(map[string]*election.Runner),
+		runnerCancels:       make(map[string]context.CancelFunc),
 		pendingResignations: make(chan election.Resignation, 100),
+		tracker:             tracker,
 		logNames:            make(map[int64]string),
 	}
-}
-
-// getActiveLogIDs returns IDs of all currently active logs, regardless of
-// mastership status.
-func (o *OperationManager) getActiveLogIDs(ctx context.Context) ([]int64, error) {
-	tx, err := o.info.Registry.LogStorage.Snapshot(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction: %v", err)
-	}
-	defer tx.Close()
-
-	logIDs, err := tx.GetActiveLogIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get active logIDs: %v", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed to commit: %v", err)
-	}
-	return logIDs, nil
 }
 
 // logName maps a logID to a human-readable name, caching results along the way.
 // The human-readable name may non-unique so should only be used for diagnostics.
 func (o *OperationManager) logName(ctx context.Context, logID int64) string {
-	o.logNamesMutex.Lock()
-	defer o.logNamesMutex.Unlock()
+	o.idsMutex.Lock()
+	defer o.idsMutex.Unlock()
 	if name, ok := o.logNames[logID]; ok {
 		return name
 	}
@@ -211,36 +205,14 @@ func (o *OperationManager) masterFor(ctx context.Context, allIDs []int64) ([]int
 		s := strconv.FormatInt(id, 10)
 		allStringIDs = append(allStringIDs, s)
 	}
-	if o.tracker == nil {
-		glog.Infof("creating mastership tracker for %v", allIDs)
-		o.tracker = election.NewMasterTracker(allStringIDs, func(id string, v bool) {
-			val := 0.0
-			if v {
-				val = 1.0
-			}
-			isMaster.Set(val, id)
-		})
-	}
 
 	// Synchronize the set of log IDs with those we are tracking mastership for.
 	for _, logID := range allStringIDs {
 		knownLogs.Set(1, logID)
-		if o.electionRunner[logID] != nil {
-			continue
+		if o.runnerCancels[logID] == nil {
+			o.tracker.Set(logID, false) // Initialise tracking for this ID.
+			o.runnerCancels[logID] = o.runElectionWithRestarts(ctx, logID)
 		}
-		glog.Infof("create master election goroutine for %v", logID)
-		innerCtx, cancel := context.WithCancel(ctx)
-		el, err := o.info.Registry.ElectionFactory.NewElection(innerCtx, logID)
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("failed to create election for %v: %v", logID, err)
-		}
-		o.electionRunner[logID] = election.NewRunner(logID, &o.info.ElectionConfig, o.tracker, cancel, el)
-		o.runnerWG.Add(1)
-		go func(r *election.Runner) {
-			defer o.runnerWG.Done()
-			r.Run(innerCtx, o.pendingResignations)
-		}(o.electionRunner[logID])
 	}
 
 	held := o.tracker.Held()
@@ -261,11 +233,52 @@ func (o *OperationManager) masterFor(ctx context.Context, allIDs []int64) ([]int
 	return heldIDs, nil
 }
 
+// runElectionWithRestarts runs the election/resignation loop for the given log
+// indefinitely, until the returned CancelFunc is invoked. Any failure during
+// the loop leads to a restart of the loop with a few seconds delay.
+//
+// TODO(pavelkalinnikov): Restart the whole log operation rather than just the
+// election, and have a metric for restarts.
+func (o *OperationManager) runElectionWithRestarts(ctx context.Context, logID string) context.CancelFunc {
+	glog.Infof("create master election goroutine for %v", logID)
+	cctx, cancel := context.WithCancel(ctx)
+	run := func(ctx context.Context) {
+		e, err := o.info.Registry.ElectionFactory.NewElection(ctx, logID)
+		if err != nil {
+			glog.Errorf("failed to create election for %v: %v", logID, err)
+			return
+		}
+		// Warning: NewRunner can attempt to modify the config. Make a separate
+		// copy of the config for each log, to avoid data races.
+		config := o.info.ElectionConfig
+		// TODO(pavelkalinnikov): Passing the cancel function is not needed here.
+		r := election.NewRunner(logID, &config, o.tracker, cancel, e)
+		r.Run(ctx, o.pendingResignations)
+	}
+	o.runnerWG.Add(1)
+	go func(ctx context.Context) {
+		defer o.runnerWG.Done()
+		// Continue only while the context is active.
+		for ctx.Err() == nil {
+			run(ctx)
+			// Sleep before restarts, to not spam the log with errors.
+			// TODO(pavelkalinnikov): Make the interval configurable.
+			const pause = time.Duration(5 * time.Second)
+			if err := clock.SleepSource(ctx, pause, o.info.TimeSource); err != nil {
+				break // The context has been canceled during the sleep.
+			}
+		}
+	}(cctx)
+	return cancel
+}
+
 // updateHeldIDs updates the process status with the number/list of logs that
 // the instance holds mastership for.
 func (o *OperationManager) updateHeldIDs(ctx context.Context, logIDs, activeIDs []int64) {
 	heldInfo := o.heldInfo(ctx, logIDs)
 	msg := fmt.Sprintf("Acting as master for %d / %d active logs: %s", len(logIDs), len(activeIDs), heldInfo)
+	o.idsMutex.Lock()
+	defer o.idsMutex.Unlock()
 	if !reflect.DeepEqual(logIDs, o.lastHeld) {
 		o.lastHeld = make([]int64, len(logIDs))
 		copy(o.lastHeld, logIDs)
@@ -282,7 +295,7 @@ func (o *OperationManager) getLogsAndExecutePass(ctx context.Context) error {
 	runCtx, cancel := context.WithTimeout(ctx, o.info.Timeout)
 	defer cancel()
 
-	activeIDs, err := o.getActiveLogIDs(runCtx)
+	activeIDs, err := o.info.Registry.LogStorage.GetActiveLogIDs(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list active log IDs: %v", err)
 	}
@@ -295,19 +308,14 @@ func (o *OperationManager) getLogsAndExecutePass(ctx context.Context) error {
 	}
 	o.updateHeldIDs(ctx, logIDs, activeIDs)
 
-	// TODO(pavelkalinnikov): Run executor once instead of doing it on each pass.
-	// This will be also needed when factoring out per-log operation loop.
-	ex := newExecutor(o.logOperation, &o.info, len(logIDs))
-	// Put logIDs that need to be processed to the executor's channel.
-	for _, logID := range logIDs {
-		ex.jobs <- logID
-	}
-	close(ex.jobs) // Cause executor's run to terminate when it has drained the jobs.
-	ex.run(runCtx)
+	executePassForAll(runCtx, &o.info, o.logOperation, logIDs)
 	return nil
 }
 
 // OperationSingle performs a single pass of the manager.
+//
+// TODO(pavelkalinnikov): Deprecate this because it doesn't clean up any state,
+// and is used only for testing.
 func (o *OperationManager) OperationSingle(ctx context.Context) {
 	if err := o.getLogsAndExecutePass(ctx); err != nil {
 		glog.Errorf("failed to perform operation: %v", err)
@@ -319,61 +327,20 @@ func (o *OperationManager) OperationSingle(ctx context.Context) {
 func (o *OperationManager) OperationLoop(ctx context.Context) {
 	glog.Infof("Log operation manager starting")
 
-	// Outer loop, runs until terminated
-loop:
+	// Outer loop, runs until terminated.
 	for {
-		// TODO(alcutter): want a child context with deadline here?
-		start := o.info.TimeSource.Now()
-		if err := o.getLogsAndExecutePass(ctx); err != nil {
-			// Suppress the error if ctx is done (ctx.Err != nil) as we're exiting.
-			if ctx.Err() != nil {
-				glog.Errorf("failed to execute operation on logs: %v", err)
-			}
-		}
-		glog.V(1).Infof("Log operation manager pass complete")
-
-		// Process any pending resignations while there's no activity.
-		doneResigning := false
-		for !doneResigning {
-			select {
-			case r := <-o.pendingResignations:
-				resignations.Inc(r.ID)
-				r.Execute(ctx)
-			default:
-				doneResigning = true
-			}
-		}
-
-		// See if it's time to quit
-		select {
-		case <-ctx.Done():
+		if err := o.operateOnce(ctx); err != nil {
 			glog.Infof("Log operation manager shutting down")
-			break loop
-		default:
+			break
 		}
-
-		// Wait for the configured time before going for another pass
-		duration := o.info.TimeSource.Now().Sub(start)
-		wait := o.info.RunInterval - duration
-		if wait > 0 {
-			glog.V(1).Infof("Processing started at %v for %v; wait %v before next run", start, duration, wait)
-			if err := clock.SleepContext(ctx, wait); err != nil {
-				glog.Infof("Log operation manager shutting down")
-				break loop
-			}
-		} else {
-			glog.V(1).Infof("Processing started at %v for %v; start next run immediately", start, duration)
-		}
-
 	}
 
-	// Terminate all the election runners
-	for logID, runner := range o.electionRunner {
-		if runner == nil {
-			continue
+	// Terminate all the election Runners.
+	for logID, cancel := range o.runnerCancels {
+		if cancel != nil {
+			glog.V(1).Infof("cancel election runner for %s", logID)
+			cancel()
 		}
-		glog.V(1).Infof("cancel election runner for %s", logID)
-		runner.Cancel()
 	}
 
 	// Drain any remaining resignations which might have triggered.
@@ -388,84 +355,106 @@ loop:
 	glog.Infof("wait for termination of election runners...done")
 }
 
-// logOperationExecutor runs the specified Operation on the submitted logs
-// in a set of parallel workers.
-type logOperationExecutor struct {
-	op   Operation
-	info *OperationInfo
-
-	// jobs holds logIDs to run log operation on.
-	// TODO(pavelkalinnikov): Use mastership context for each job to make them
-	// auto-cancelable when mastership is lost.
-	// TODO(pavelkalinnikov): Report job completion status back.
-	jobs chan int64
-}
-
-func newExecutor(op Operation, info *OperationInfo, jobs int) *logOperationExecutor {
-	if jobs < 0 {
-		jobs = 0
+// operateOnce runs a single round of operation for each of the active logs
+// that this instance is master for. Returns an error only if the context is
+// canceled, i.e. the operation is being shut down.
+func (o *OperationManager) operateOnce(ctx context.Context) error {
+	// TODO(alcutter): want a child context with deadline here?
+	start := o.info.TimeSource.Now()
+	if err := o.getLogsAndExecutePass(ctx); err != nil {
+		// Suppress the error if ctx is done (ctx.Err != nil) as we're exiting.
+		if ctx.Err() != nil {
+			glog.Errorf("failed to execute operation on logs: %v", err)
+		}
 	}
-	return &logOperationExecutor{op: op, info: info, jobs: make(chan int64, jobs)}
+	glog.V(1).Infof("Log operation manager pass complete")
+
+	// Process any pending resignations while there's no activity.
+	doneResigning := false
+	for !doneResigning {
+		select {
+		case r := <-o.pendingResignations:
+			resignations.Inc(r.ID)
+			r.Execute(ctx)
+		default:
+			doneResigning = true
+		}
+	}
+
+	// See if it's time to quit.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Wait for the configured time before going for another pass.
+	duration := o.info.TimeSource.Now().Sub(start)
+	wait := o.info.RunInterval - duration
+	if wait > 0 {
+		glog.V(1).Infof("Processing started at %v for %v; wait %v before next run", start, duration, wait)
+		if err := clock.SleepContext(ctx, wait); err != nil {
+			return err
+		}
+	} else {
+		glog.V(1).Infof("Processing started at %v for %v; start next run immediately", start, duration)
+	}
+	return nil
 }
 
-// run sets off a collection of transient worker goroutines which process the
-// pending log operation jobs until the jobs channel is closed.
-func (e *logOperationExecutor) run(ctx context.Context) {
-	startBatch := e.info.TimeSource.Now()
+// executePassForAll runs ExecutePass of the given operation for each of the
+// passed-in logs, allowing up to a configurable number of parallel operations.
+func executePassForAll(ctx context.Context, info *OperationInfo, op Operation, logIDs []int64) {
+	startBatch := info.TimeSource.Now()
 
-	numWorkers := e.info.NumWorkers
+	numWorkers := info.NumWorkers
 	if numWorkers <= 0 {
 		glog.Warning("Running executor with NumWorkers <= 0, assuming 1")
 		numWorkers = 1
 	}
 	glog.V(1).Infof("Running executor with %d worker(s)", numWorkers)
 
+	sem := semaphore.NewWeighted(int64(numWorkers))
 	var wg sync.WaitGroup
-	var successCount, failCount, itemCount int64
-
-	for i := 0; i < numWorkers; i++ {
+	for _, logID := range logIDs {
+		if err := sem.Acquire(ctx, 1); err != nil {
+			break // Terminate because the context is canceled.
+		}
 		wg.Add(1)
-		go func() {
+		go func(logID int64) {
 			defer wg.Done()
-			for {
-				logID, ok := <-e.jobs
-				if !ok {
-					return
-				}
-
-				label := strconv.FormatInt(logID, 10)
-				start := e.info.TimeSource.Now()
-				count, err := e.op.ExecutePass(ctx, logID, e.info)
-				if err != nil {
-					glog.Errorf("ExecutePass(%v) failed: %v", logID, err)
-					failedSigningRuns.Inc(label)
-					atomic.AddInt64(&failCount, 1)
-					continue
-				}
-
-				// This indicates signing activity is proceeding on the logID.
-				signingRuns.Inc(label)
-				if count > 0 {
-					d := clock.SecondsSince(e.info.TimeSource, start)
-					glog.Infof("%v: processed %d items in %.2f seconds (%.2f qps)", logID, count, d, float64(count)/d)
-					entriesAdded.Add(float64(count), label)
-					batchesAdded.Inc(label)
-				} else {
-					glog.V(1).Infof("%v: no items to process", logID)
-				}
-
-				atomic.AddInt64(&successCount, 1)
-				atomic.AddInt64(&itemCount, int64(count))
+			defer sem.Release(1)
+			if err := executePass(ctx, info, op, logID); err != nil {
+				glog.Errorf("ExecutePass(%v) failed: %v", logID, err)
 			}
-		}()
+		}(logID)
 	}
 
 	// Wait for the workers to consume all of the logIDs.
 	wg.Wait()
-	d := clock.SecondsSince(e.info.TimeSource, startBatch)
-	if itemCount > 0 {
-		glog.Infof("Group run completed in %.2f seconds: %v succeeded, %v failed, %v items processed", d, successCount, failCount, itemCount)
-	} else {
-		glog.V(1).Infof("Group run completed in %.2f seconds: no items to process", d)
+	d := clock.SecondsSince(info.TimeSource, startBatch)
+	glog.V(1).Infof("Group run completed in %.2f seconds", d)
+}
+
+// executePass runs ExecutePass of the given operation for the passed-in log.
+func executePass(ctx context.Context, info *OperationInfo, op Operation, logID int64) error {
+	label := strconv.FormatInt(logID, 10)
+	start := info.TimeSource.Now()
+	count, err := op.ExecutePass(ctx, logID, info)
+	if err != nil {
+		failedSigningRuns.Inc(label)
+		return err
 	}
+
+	// This indicates signing activity is proceeding on the logID.
+	signingRuns.Inc(label)
+	if count > 0 {
+		d := clock.SecondsSince(info.TimeSource, start)
+		glog.Infof("%v: processed %d items in %.2f seconds (%.2f qps)", logID, count, d, float64(count)/d)
+		entriesAdded.Add(float64(count), label)
+		batchesAdded.Inc(label)
+	} else {
+		glog.V(1).Infof("%v: no items to process", logID)
+	}
+	return nil
 }

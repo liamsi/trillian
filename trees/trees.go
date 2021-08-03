@@ -18,19 +18,13 @@ package trees
 
 import (
 	"context"
-	"crypto"
 	"fmt"
 
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keys"
-	"github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/monitoring"
 	"github.com/google/trillian/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	tcrypto "github.com/google/trillian/crypto"
 )
 
 const traceSpanRoot = "/trillian/trees"
@@ -59,7 +53,6 @@ var rules = map[OpType]accessRule{
 		},
 		okTypes: map[trillian.TreeType]bool{
 			trillian.TreeType_LOG:            true,
-			trillian.TreeType_MAP:            true,
 			trillian.TreeType_PREORDERED_LOG: true,
 		},
 	},
@@ -74,7 +67,6 @@ var rules = map[OpType]accessRule{
 		},
 		okTypes: map[trillian.TreeType]bool{
 			trillian.TreeType_LOG:            true,
-			trillian.TreeType_MAP:            true,
 			trillian.TreeType_PREORDERED_LOG: true,
 		},
 	},
@@ -102,14 +94,6 @@ var rules = map[OpType]accessRule{
 		},
 		rejectCodes: map[trillian.TreeState]codes.Code{
 			trillian.TreeState_FROZEN: codes.PermissionDenied,
-		},
-	},
-	UpdateMap: {
-		okStates: map[trillian.TreeState]bool{
-			trillian.TreeState_ACTIVE: true,
-		},
-		okTypes: map[trillian.TreeType]bool{
-			trillian.TreeType_MAP: true,
 		},
 	},
 }
@@ -181,44 +165,6 @@ func GetTree(ctx context.Context, s storage.AdminStorage, treeID int64, opts Get
 	}
 
 	return tree, nil
-}
-
-// Hash returns the crypto.Hash configured by the tree.
-func Hash(tree *trillian.Tree) (crypto.Hash, error) {
-	switch tree.HashAlgorithm {
-	case sigpb.DigitallySigned_SHA256:
-		return crypto.SHA256, nil
-	}
-	// There's no nil-like value for crypto.Hash, something has to be returned.
-	return crypto.SHA256, fmt.Errorf("unexpected hash algorithm: %s", tree.HashAlgorithm)
-}
-
-// Signer returns a Trillian crypto.Signer configured by the tree.
-func Signer(ctx context.Context, tree *trillian.Tree) (*tcrypto.Signer, error) {
-	if tree.SignatureAlgorithm == sigpb.DigitallySigned_ANONYMOUS {
-		return nil, fmt.Errorf("signature algorithm not supported: %s", tree.SignatureAlgorithm)
-	}
-
-	hash, err := Hash(tree)
-	if err != nil {
-		return nil, err
-	}
-
-	var keyProto ptypes.DynamicAny
-	if err := ptypes.UnmarshalAny(tree.PrivateKey, &keyProto); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal tree.PrivateKey: %v", err)
-	}
-
-	signer, err := keys.NewSigner(ctx, keyProto.Message)
-	if err != nil {
-		return nil, err
-	}
-
-	if tcrypto.SignatureAlgorithm(signer.Public()) != tree.SignatureAlgorithm {
-		return nil, fmt.Errorf("%s signature not supported by signer of type %T", tree.SignatureAlgorithm, signer)
-	}
-
-	return tcrypto.NewSigner(tree.GetTreeId(), signer, hash), nil
 }
 
 func spanFor(ctx context.Context, name string) (context.Context, func()) {

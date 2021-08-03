@@ -21,13 +21,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian/quota"
 	"github.com/google/trillian/quota/etcd/storage"
 	"github.com/google/trillian/quota/etcd/storagepb"
 	"github.com/google/trillian/testonly/integration/etcd"
-	"go.etcd.io/etcd/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -163,49 +163,6 @@ func TestManager_GetTokensErrors(t *testing.T) {
 	}
 }
 
-func TestManager_PeekTokens(t *testing.T) {
-	ctx := context.Background()
-	qs := &storage.QuotaStorage{Client: client}
-	if err := reset(ctx, qs, cfgs); err != nil {
-		t.Fatalf("reset() returned err = %v", err)
-	}
-
-	tests := []struct {
-		desc  string
-		specs []quota.Spec
-		want  map[quota.Spec]int
-	}{
-		{
-			desc:  "singleSpec",
-			specs: []quota.Spec{globalWriteSpec},
-			want: map[quota.Spec]int{
-				globalWriteSpec: int(globalWriteConfig.MaxTokens),
-			},
-		},
-		{
-			desc:  "multiSpecs",
-			specs: []quota.Spec{userReadSpec, treeWriteSpec, globalWriteSpec},
-			want: map[quota.Spec]int{
-				globalWriteSpec: int(globalWriteConfig.MaxTokens),
-				treeWriteSpec:   int(treeWriteConfig.MaxTokens),
-				userReadSpec:    int(userReadConfig.MaxTokens),
-			},
-		},
-	}
-
-	qm := New(client)
-	for _, test := range tests {
-		tokens, err := qm.PeekTokens(ctx, test.specs)
-		if err != nil {
-			t.Errorf("%v: PeekTokens() returned err = %v", test.desc, err)
-			continue
-		}
-		if diff := cmp.Diff(tokens, test.want); diff != "" {
-			t.Errorf("%v: post-PeekTokens() diff (-got +want):\n%v", test.desc, diff)
-		}
-	}
-}
-
 func TestManager_PutTokens(t *testing.T) {
 	ctx := context.Background()
 	qs := &storage.QuotaStorage{Client: client}
@@ -282,12 +239,12 @@ func TestManager_ResetQuota(t *testing.T) {
 			t.Errorf("%v: ResetQuota() returned err = %v", test.desc, err)
 			continue
 		}
-		tokens, err := qm.PeekTokens(ctx, test.specs)
+		tokens, err := qm.peekTokens(ctx, test.specs)
 		if err != nil {
-			t.Fatalf("%v: PeekTokens() returned err = %v", test.desc, err)
+			t.Fatalf("%v: peekTokens() returned err = %v", test.desc, err)
 		}
 		if diff := cmp.Diff(tokens, test.want); diff != "" {
-			t.Errorf("%v: post-PeekTokens() diff (-got +want):\n%v", test.desc, diff)
+			t.Errorf("%v: post-peekTokens() diff (-got +want):\n%v", test.desc, diff)
 		}
 	}
 }

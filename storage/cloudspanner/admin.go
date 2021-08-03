@@ -16,22 +16,21 @@ package cloudspanner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/spanner"
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto/keyspb"
-	"github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cloudspanner/spannerpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
@@ -42,37 +41,17 @@ var (
 	// TimeNow is the function used to get the current time. Exposed so it may be mocked by tests.
 	TimeNow = time.Now
 
-	errRollback = errors.New("rollback")
-
 	treeStateMap = map[trillian.TreeState]spannerpb.TreeState{
 		trillian.TreeState_ACTIVE: spannerpb.TreeState_ACTIVE,
 		trillian.TreeState_FROZEN: spannerpb.TreeState_FROZEN,
 	}
 	treeTypeMap = map[trillian.TreeType]spannerpb.TreeType{
 		trillian.TreeType_LOG:            spannerpb.TreeType_LOG,
-		trillian.TreeType_MAP:            spannerpb.TreeType_MAP,
 		trillian.TreeType_PREORDERED_LOG: spannerpb.TreeType_PREORDERED_LOG,
 	}
-	hashStrategyMap = map[trillian.HashStrategy]spannerpb.HashStrategy{
-		trillian.HashStrategy_RFC6962_SHA256:        spannerpb.HashStrategy_RFC_6962,
-		trillian.HashStrategy_TEST_MAP_HASHER:       spannerpb.HashStrategy_TEST_MAP_HASHER,
-		trillian.HashStrategy_OBJECT_RFC6962_SHA256: spannerpb.HashStrategy_OBJECT_RFC6962_SHA256,
-		trillian.HashStrategy_CONIKS_SHA512_256:     spannerpb.HashStrategy_CONIKS_SHA512_256,
-		trillian.HashStrategy_CONIKS_SHA256:         spannerpb.HashStrategy_CONIKS_SHA256,
-	}
-	hashAlgMap = map[sigpb.DigitallySigned_HashAlgorithm]spannerpb.HashAlgorithm{
-		sigpb.DigitallySigned_SHA256: spannerpb.HashAlgorithm_SHA256,
-	}
-	signatureAlgMap = map[sigpb.DigitallySigned_SignatureAlgorithm]spannerpb.SignatureAlgorithm{
-		sigpb.DigitallySigned_RSA:   spannerpb.SignatureAlgorithm_RSA,
-		sigpb.DigitallySigned_ECDSA: spannerpb.SignatureAlgorithm_ECDSA,
-	}
 
-	treeStateReverseMap    = reverseTreeStateMap(treeStateMap)
-	treeTypeReverseMap     = reverseTreeTypeMap(treeTypeMap)
-	hashStrategyReverseMap = reverseHashStrategyMap(hashStrategyMap)
-	hashAlgReverseMap      = reverseHashAlgMap(hashAlgMap)
-	signatureAlgReverseMap = reverseSignatureAlgMap(signatureAlgMap)
+	treeStateReverseMap = reverseTreeStateMap(treeStateMap)
+	treeTypeReverseMap  = reverseTreeTypeMap(treeTypeMap)
 )
 
 const nanosPerMilli = int64(time.Millisecond / time.Nanosecond)
@@ -99,56 +78,23 @@ func reverseTreeTypeMap(m map[trillian.TreeType]spannerpb.TreeType) map[spannerp
 	return reverse
 }
 
-func reverseHashStrategyMap(m map[trillian.HashStrategy]spannerpb.HashStrategy) map[spannerpb.HashStrategy]trillian.HashStrategy {
-	reverse := make(map[spannerpb.HashStrategy]trillian.HashStrategy)
-	for k, v := range m {
-		if x, ok := reverse[v]; ok {
-			glog.Fatalf("Duplicate values for key %v: %v and %v", v, x, k)
-		}
-		reverse[v] = k
-	}
-	return reverse
-}
-
-func reverseHashAlgMap(m map[sigpb.DigitallySigned_HashAlgorithm]spannerpb.HashAlgorithm) map[spannerpb.HashAlgorithm]sigpb.DigitallySigned_HashAlgorithm {
-	reverse := make(map[spannerpb.HashAlgorithm]sigpb.DigitallySigned_HashAlgorithm)
-	for k, v := range m {
-		if x, ok := reverse[v]; ok {
-			glog.Fatalf("Duplicate values for key %v: %v and %v", v, x, k)
-		}
-		reverse[v] = k
-	}
-	return reverse
-}
-
-func reverseSignatureAlgMap(m map[sigpb.DigitallySigned_SignatureAlgorithm]spannerpb.SignatureAlgorithm) map[spannerpb.SignatureAlgorithm]sigpb.DigitallySigned_SignatureAlgorithm {
-	reverse := make(map[spannerpb.SignatureAlgorithm]sigpb.DigitallySigned_SignatureAlgorithm)
-	for k, v := range m {
-		if x, ok := reverse[v]; ok {
-			glog.Fatalf("Duplicate values for key %v: %v and %v", v, x, k)
-		}
-		reverse[v] = k
-	}
-	return reverse
-}
-
 // adminTX implements both storage.ReadOnlyAdminTX and storage.AdminTX.
 type adminTX struct {
 	client *spanner.Client
 
+	// mu guards tx, but it's only actively used for Commit/Close. In other
+	// scenarios we trust Spanner to blow up if you try to use a closed tx.
+	//
+	// Note that, if tx is a spanner.SnapshotTransaction, it'll be set to nil
+	// when adminTX is closed.
+	mu sync.RWMutex
+
 	// tx is either spanner.ReadOnlyTransaction or spanner.ReadWriteTransaction,
 	// according to the role adminTX is meant to fill.
-	// If tx is a snapshot transaction it'll be set to nil when adminTX is
-	// closed to avoid reuse.
+	//
+	// If tx is a snapshot transaction it'll be set to nil when adminTX is closed
+	// to avoid reuse.
 	tx spanRead
-
-	// mu guards closed, but it's only actively used for
-	// Commit/Rollback/Closed. In other scenarios we trust Spanner to blow up
-	// if you try to use a closed tx.
-	// Note that, if tx is a spanner.SnapshotTransaction, it'll be set to
-	// nil when adminTX is closed.
-	mu     sync.RWMutex
-	closed bool
 }
 
 // adminStorage implements storage.AdminStorage.
@@ -191,21 +137,6 @@ func (t *adminTX) Commit() error {
 	return t.Close()
 }
 
-// Rollback implements ReadOnlyAdminTX.Rollback.
-func (t *adminTX) Rollback() error {
-	if err := t.Close(); err != nil {
-		return nil
-	}
-	return errRollback
-}
-
-// IsClosed implements ReadOnlyAdminTX.IsClosed.
-func (t *adminTX) IsClosed() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.closed
-}
-
 // Close implements ReadOnlyAdminTX.Close.
 func (t *adminTX) Close() error {
 	t.mu.Lock()
@@ -222,7 +153,7 @@ func (t *adminTX) Close() error {
 	return nil
 }
 
-// GetTree implements AdminReader.GetTree.
+// GetTree implements ReadOnlyAdminTX.GetTree.
 func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, error) {
 	info, err := t.getTreeInfo(ctx, treeID)
 	if err != nil {
@@ -257,8 +188,8 @@ func (t *adminTX) getTreeInfo(ctx context.Context, treeID int64) (*spannerpb.Tre
 	var delMillis spanner.NullInt64
 	if err := row.Columns(
 		&tID,
-		&tState, //info.TreeState,
-		&tType,  //info.TreeType,
+		&tState, // info.TreeState,
+		&tType,  // info.TreeType,
 		&infoBytes,
 		&deleted,
 		&delMillis,
@@ -287,10 +218,6 @@ func (t *adminTX) getTreeInfo(ctx context.Context, treeID int64) (*spannerpb.Tre
 		if info.GetLogStorageConfig() == nil {
 			return nil, status.Errorf(codes.Internal, "corrupt TreeInfo %#v: LogStorageConfig is nil", treeID)
 		}
-	case spannerpb.TreeType_MAP:
-		if info.GetMapStorageConfig() == nil {
-			return nil, status.Errorf(codes.Internal, "corrupt TreeInfo #%v: MapStorageConfig is nil", treeID)
-		}
 	default:
 		return nil, status.Errorf(codes.Internal, "corrupt TreeInfo %#v: unexpected TreeType = %s", treeID, tt)
 	}
@@ -298,21 +225,7 @@ func (t *adminTX) getTreeInfo(ctx context.Context, treeID int64) (*spannerpb.Tre
 	return info, nil
 }
 
-// ListTreeIDs implements AdminReader.ListTreeIDs.
-func (t *adminTX) ListTreeIDs(ctx context.Context, includeDeleted bool) ([]int64, error) {
-	ids := []int64{}
-	err := t.readTrees(ctx, includeDeleted, true /* idOnly */, func(r *spanner.Row) error {
-		var id int64
-		if err := r.Columns(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-		return nil
-	})
-	return ids, err
-}
-
-// ListTrees implements AdminReader.ListTrees.
+// ListTrees implements ReadOnlyAdminTX.ListTrees.
 func (t *adminTX) ListTrees(ctx context.Context, includeDeleted bool) ([]*trillian.Tree, error) {
 	trees := []*trillian.Tree{}
 	err := t.readTrees(ctx, includeDeleted, false /* idOnly */, func(r *spanner.Row) error {
@@ -409,25 +322,10 @@ func newTreeInfo(tree *trillian.Tree, treeID int64, now time.Time) (*spannerpb.T
 		return nil, status.Errorf(codes.Internal, "unexpected TreeType: %s", tree.TreeType)
 	}
 
-	hs, ok := hashStrategyMap[tree.HashStrategy]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected HashStrategy: %s", tree.HashStrategy)
-	}
-
-	ha, ok := hashAlgMap[tree.HashAlgorithm]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected HashAlgorithm: %s", tree.HashAlgorithm)
-	}
-
-	sa, ok := signatureAlgMap[tree.SignatureAlgorithm]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected SignatureAlgorithm: %s", tree.SignatureAlgorithm)
-	}
-
-	maxRootDuration, err := ptypes.Duration(tree.MaxRootDuration)
-	if err != nil {
+	if err := tree.MaxRootDuration.CheckValid(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "malformed MaxRootDuration: %v", err)
 	}
+	maxRootDuration := tree.MaxRootDuration.AsDuration()
 
 	info := &spannerpb.TreeInfo{
 		TreeId:                treeID,
@@ -435,13 +333,8 @@ func newTreeInfo(tree *trillian.Tree, treeID int64, now time.Time) (*spannerpb.T
 		Description:           tree.Description,
 		TreeState:             ts,
 		TreeType:              tt,
-		HashStrategy:          hs,
-		HashAlgorithm:         ha,
-		SignatureAlgorithm:    sa,
 		CreateTimeNanos:       now.UnixNano(),
 		UpdateTimeNanos:       now.UnixNano(),
-		PrivateKey:            tree.GetPrivateKey(),
-		PublicKeyDer:          tree.GetPublicKey().GetDer(),
 		MaxRootDurationMillis: int64(maxRootDuration / time.Millisecond),
 	}
 
@@ -457,13 +350,6 @@ func newTreeInfo(tree *trillian.Tree, treeID int64, now time.Time) (*spannerpb.T
 			return nil, err
 		}
 		info.StorageConfig = &spannerpb.TreeInfo_LogStorageConfig{LogStorageConfig: config}
-	case trillian.TreeType_MAP:
-		config, err := mapConfigOrDefault(tree)
-		if err != nil {
-			return nil, err
-		}
-		// Nothing to validate on MapStorageConfig.
-		info.StorageConfig = &spannerpb.TreeInfo_MapStorageConfig{MapStorageConfig: config}
 	default:
 		return nil, fmt.Errorf("Unknown tree type %v", tt)
 	}
@@ -485,21 +371,6 @@ func logConfigOrDefault(tree *trillian.Tree) (*spannerpb.LogStorageConfig, error
 	config, ok := settings.(*spannerpb.LogStorageConfig)
 	if !ok {
 		return nil, status.Errorf(codes.Internal, "unsupported config type for LOG tree: %T", settings)
-	}
-	return config, nil
-}
-
-func mapConfigOrDefault(tree *trillian.Tree) (*spannerpb.MapStorageConfig, error) {
-	settings, err := unmarshalSettings(tree)
-	if err != nil {
-		return nil, err
-	}
-	if settings == nil {
-		return &spannerpb.MapStorageConfig{}, nil
-	}
-	config, ok := settings.(*spannerpb.MapStorageConfig)
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unsupported config type for MAP tree: %T", settings)
 	}
 	return config, nil
 }
@@ -529,10 +400,10 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 		return nil, status.Errorf(codes.Internal, "unexpected TreeState: %s", tree.TreeState)
 	}
 
-	maxRootDuration, err := ptypes.Duration(tree.MaxRootDuration)
-	if err != nil {
+	if err := tree.MaxRootDuration.CheckValid(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "malformed MaxRootDuration: %v", err)
 	}
+	maxRootDuration := tree.MaxRootDuration.AsDuration()
 
 	// Update (just) the mutable fields in treeInfo.
 	now := TimeNow()
@@ -541,7 +412,6 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 	info.Description = tree.Description
 	info.UpdateTimeNanos = now.UnixNano()
 	info.MaxRootDurationMillis = int64(maxRootDuration / time.Millisecond)
-	info.PrivateKey = tree.PrivateKey
 
 	if err := t.updateTreeInfo(ctx, info); err != nil {
 		return nil, err
@@ -626,7 +496,6 @@ func (t *adminTX) HardDeleteTree(ctx context.Context, treeID int64) error {
 		spanner.Delete("LeafData", spanner.Key{info.TreeId}.AsPrefix()),
 		spanner.Delete("SequencedLeafData", spanner.Key{info.TreeId}.AsPrefix()),
 		spanner.Delete("Unsequenced", spanner.Key{info.TreeId}.AsPrefix()),
-		spanner.Delete("MapLeafData", spanner.Key{info.TreeId}.AsPrefix()),
 	})
 }
 
@@ -650,13 +519,13 @@ func (t *adminTX) UndeleteTree(ctx context.Context, treeID int64) (*trillian.Tre
 }
 
 func toTrillianTree(info *spannerpb.TreeInfo) (*trillian.Tree, error) {
-	createdPB, err := ptypes.TimestampProto(time.Unix(0, info.CreateTimeNanos))
-	if err != nil {
+	createdPB := timestamppb.New(time.Unix(0, info.CreateTimeNanos))
+	updatedPB := timestamppb.New(time.Unix(0, info.UpdateTimeNanos))
+	if err := createdPB.CheckValid(); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to convert creation time: %v", err)
 	}
-	updatedPB, err := ptypes.TimestampProto(time.Unix(0, info.UpdateTimeNanos))
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to convert creation time: %v", err)
+	if err := updatedPB.CheckValid(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to convert update time: %v", err)
 	}
 	tree := &trillian.Tree{
 		TreeId:          info.TreeId,
@@ -664,9 +533,7 @@ func toTrillianTree(info *spannerpb.TreeInfo) (*trillian.Tree, error) {
 		Description:     info.Description,
 		CreateTime:      createdPB,
 		UpdateTime:      updatedPB,
-		PrivateKey:      info.PrivateKey,
-		PublicKey:       &keyspb.PublicKey{Der: info.PublicKeyDer},
-		MaxRootDuration: ptypes.DurationProto(time.Duration(info.MaxRootDurationMillis) * time.Millisecond),
+		MaxRootDuration: durationpb.New(time.Duration(info.MaxRootDurationMillis) * time.Millisecond),
 	}
 
 	ts, ok := treeStateReverseMap[info.TreeState]
@@ -681,38 +548,18 @@ func toTrillianTree(info *spannerpb.TreeInfo) (*trillian.Tree, error) {
 	}
 	tree.TreeType = tt
 
-	hs, ok := hashStrategyReverseMap[info.HashStrategy]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected HashStrategy: %s", info.HashStrategy)
-	}
-	tree.HashStrategy = hs
-
-	ha, ok := hashAlgReverseMap[info.HashAlgorithm]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected HashAlgorithm: %s", info.HashAlgorithm)
-	}
-	tree.HashAlgorithm = ha
-
-	sa, ok := signatureAlgReverseMap[info.SignatureAlgorithm]
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "unexpected SignatureAlgorithm: %s", info.SignatureAlgorithm)
-	}
-	tree.SignatureAlgorithm = sa
-
 	var config proto.Message
 	switch tt := info.TreeType; tt {
 	case spannerpb.TreeType_PREORDERED_LOG:
 		fallthrough
 	case spannerpb.TreeType_LOG:
 		config = info.GetLogStorageConfig()
-	case spannerpb.TreeType_MAP:
-		config = info.GetMapStorageConfig()
 	default:
-		return nil, fmt.Errorf("Unknown tree type %v", tt)
+		return nil, fmt.Errorf("unknown tree type %v", tt)
 	}
-	settings, err := ptypes.MarshalAny(config)
+	settings, err := anypb.New(config)
 	if err != nil {
-		return nil, fmt.Errorf("ptypes.MarshalAny(): %w", err)
+		return nil, fmt.Errorf("anypb.New(): %w", err)
 	}
 	tree.StorageSettings = settings
 
@@ -720,9 +567,8 @@ func toTrillianTree(info *spannerpb.TreeInfo) (*trillian.Tree, error) {
 		tree.Deleted = info.Deleted
 	}
 	if info.DeleteTimeNanos > 0 {
-		var err error
-		tree.DeleteTime, err = ptypes.TimestampProto(time.Unix(0, info.DeleteTimeNanos))
-		if err != nil {
+		tree.DeleteTime = timestamppb.New(time.Unix(0, info.DeleteTimeNanos))
+		if err := tree.DeleteTime.CheckValid(); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to convert delete time: %v", err)
 		}
 	}
@@ -738,11 +584,11 @@ func unmarshalSettings(tree *trillian.Tree) (proto.Message, error) {
 	if settings == nil {
 		return nil, nil
 	}
-	any := &ptypes.DynamicAny{}
-	if err := ptypes.UnmarshalAny(settings, any); err != nil {
+	any, err := settings.UnmarshalNew()
+	if err != nil {
 		return nil, err
 	}
-	return any.Message, nil
+	return any, nil
 }
 
 func validateLogStorageConfig(config *spannerpb.LogStorageConfig) error {

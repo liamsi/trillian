@@ -24,8 +24,8 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"github.com/google/trillian"
+	"github.com/google/trillian/merkle/compact"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/storage/cloudspanner/spannerpb"
@@ -34,6 +34,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -46,7 +47,7 @@ var (
 	ErrNotImplemented = errors.New("not implemented")
 
 	// ErrTransactionClosed is returned by interface methods when an operation is
-	// attempted on a transaction whose Commit or Rollback methods have
+	// attempted on a transaction whose Commit or Close methods have
 	// previously been called.
 	ErrTransactionClosed = errors.New("transaction is closed")
 
@@ -57,7 +58,6 @@ var (
 
 const (
 	subtreeTbl   = "SubtreeData"
-	treeHeadTbl  = "TreeHeads"
 	colSubtree   = "Subtree"
 	colSubtreeID = "SubtreeID"
 	colTreeID    = "TreeID"
@@ -172,8 +172,8 @@ func (t *treeTX) getLatestRoot(ctx context.Context) error {
 	return t._currentSTHErr
 }
 
-// treeTX is a concrete implementation of the Trillian
-// storage.TreeTX interface.
+// treeTX is a concrete implementation of the part of storage.LogTreeTX
+// interface formerly known as storage.TreeTX.
 type treeTX struct {
 	treeID   int64
 	treeType trillian.TreeType
@@ -247,7 +247,11 @@ func (t *treeTX) storeSubtrees(ctx context.Context, sts []*storagepb.SubtreeProt
 }
 
 func (t *treeTX) flushSubtrees(ctx context.Context) error {
-	return t.cache.Flush(ctx, t.storeSubtrees)
+	tiles, err := t.cache.UpdatedTiles()
+	if err != nil {
+		return err
+	}
+	return t.storeSubtrees(ctx, tiles)
 }
 
 // Commit attempts to apply all actions perfomed to the underlying Spanner
@@ -276,50 +280,24 @@ func (t *treeTX) Commit(ctx context.Context) error {
 	}
 }
 
-// Rollback aborts any operations perfomed on the underlying Spanner
-// transaction.
+// Close aborts any operations perfomed on the underlying Spanner transaction.
 // On return from the call, this transaction will be in a closed state.
-func (t *treeTX) Rollback() error {
+func (t *treeTX) Close() error {
 	t.mu.Lock()
-	defer func() {
-		t.stx = nil
-		t.mu.Unlock()
-	}()
-
+	defer t.mu.Unlock()
 	if t.stx == nil {
 		return ErrTransactionClosed
 	}
-
 	if stx, ok := t.stx.(*spanner.ReadOnlyTransaction); ok {
 		glog.V(1).Infof("Closed snapshot %p", stx)
 		stx.Close()
 	}
-
 	return nil
 }
 
-func (t *treeTX) Close() error {
-	if t.IsOpen() {
-		if err := t.Rollback(); err != nil && err != ErrTransactionClosed {
-			glog.Warningf("Rollback error on Close(): %v", err)
-			return err
-		}
-	}
-	return nil
-}
-
-// IsOpen returns true iff neither Commit nor Rollback have been called.
-// If this function returns false, further operations may not be attempted on
-// this transaction object.
-func (t *treeTX) IsOpen() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.stx != nil
-}
-
-// ReadRevision returns the tree revision at which the currently visible (taking
+// readRevision returns the tree revision at which the currently visible (taking
 // into account read-staleness) STH was stored.
-func (t *treeTX) ReadRevision(ctx context.Context) (int64, error) {
+func (t *treeTX) readRevision(ctx context.Context) (int64, error) {
 	sth, err := t.currentSTH(ctx)
 	if err != nil {
 		return -1, err
@@ -327,40 +305,10 @@ func (t *treeTX) ReadRevision(ctx context.Context) (int64, error) {
 	return sth.TreeRevision, nil
 }
 
-// WriteRevision returns the tree revision at which any tree-modifying
-// operations will write.
-func (t *treeTX) WriteRevision(ctx context.Context) (int64, error) {
-	rev, err := t.writeRev(ctx)
-	if err != nil {
-		return -1, err
-	}
-	return rev, nil
-}
-
-// subtreeKey returns a non-nil []byte suitable for use as a primary key column
-// for the subtree rooted at the passed-in node ID. Returns an error if the ID
-// is not aligned to bytes.
-func subtreeKey(id tree.NodeID) ([]byte, error) {
-	// TODO(pavelkalinnikov): Extend this check to verify strata boundaries.
-	if id.PrefixLenBits%8 != 0 {
-		return nil, fmt.Errorf("invalid subtree ID - not multiple of 8: %d", id.PrefixLenBits)
-	}
-	// The returned slice must not be nil, as it would correspond to NULL in SQL.
-	if bytes := id.Path; bytes != nil {
-		return bytes[:id.PrefixLenBits/8], nil
-	}
-	return []byte{}, nil
-}
-
 // getSubtree retrieves the most recent subtree specified by id at (or below)
 // the requested revision.
 // If no such subtree exists it returns nil.
-func (t *treeTX) getSubtree(ctx context.Context, rev int64, id tree.NodeID) (p *storagepb.SubtreeProto, e error) {
-	stID, err := subtreeKey(id)
-	if err != nil {
-		return nil, err
-	}
-
+func (t *treeTX) getSubtree(ctx context.Context, rev int64, id []byte) (p *storagepb.SubtreeProto, e error) {
 	var ret *storagepb.SubtreeProto
 	stmt := spanner.NewStatement(
 		"SELECT Revision, Subtree FROM SubtreeData" +
@@ -370,11 +318,11 @@ func (t *treeTX) getSubtree(ctx context.Context, rev int64, id tree.NodeID) (p *
 			"  ORDER BY Revision DESC" +
 			"  LIMIT 1")
 	stmt.Params["tree_id"] = t.treeID
-	stmt.Params["subtree_id"] = stID
+	stmt.Params["subtree_id"] = id
 	stmt.Params["revision"] = rev
 
 	rows := t.stx.Query(ctx, stmt)
-	err = rows.Do(func(r *spanner.Row) error {
+	err := rows.Do(func(r *spanner.Row) error {
 		if ret != nil {
 			return nil
 		}
@@ -382,17 +330,17 @@ func (t *treeTX) getSubtree(ctx context.Context, rev int64, id tree.NodeID) (p *
 		var rRev int64
 		var st storagepb.SubtreeProto
 		stBytes := make([]byte, 1<<20)
-		if err = r.Columns(&rRev, &stBytes); err != nil {
+		if err := r.Columns(&rRev, &stBytes); err != nil {
 			return err
 		}
-		if err = proto.Unmarshal(stBytes, &st); err != nil {
+		if err := proto.Unmarshal(stBytes, &st); err != nil {
 			return err
 		}
 
 		if rRev > rev {
 			return fmt.Errorf("got subtree with too new a revision %d, want %d", rRev, rev)
 		}
-		if got, want := stID, st.Prefix; !bytes.Equal(got, want) {
+		if got, want := id, st.Prefix; !bytes.Equal(got, want) {
 			return fmt.Errorf("got subtree with prefix %v, wanted %v", got, want)
 		}
 		if got, want := rRev, rev; got > rev {
@@ -402,7 +350,7 @@ func (t *treeTX) getSubtree(ctx context.Context, rev int64, id tree.NodeID) (p *
 
 		// If this is a subtree with a zero-length prefix, we'll need to create an
 		// empty Prefix field:
-		if st.Prefix == nil && len(stID) == 0 {
+		if st.Prefix == nil && len(id) == 0 {
 			st.Prefix = []byte{}
 		}
 		return nil
@@ -411,48 +359,55 @@ func (t *treeTX) getSubtree(ctx context.Context, rev int64, id tree.NodeID) (p *
 }
 
 // GetMerkleNodes returns the requested set of nodes at, or before, the
-// specified tree revision.
-func (t *treeTX) GetMerkleNodes(ctx context.Context, rev int64, ids []tree.NodeID) ([]tree.Node, error) {
+// transaction read revision.
+func (t *treeTX) GetMerkleNodes(ctx context.Context, ids []compact.NodeID) ([]tree.Node, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if t.stx == nil {
 		return nil, ErrTransactionClosed
 	}
+	rev, err := t.readRevision(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get read revision: %v", err)
+	}
+	return t.cache.GetNodes(ids, t.getSubtreesAtRev(ctx, rev))
+}
 
-	return t.cache.GetNodes(ids,
-		func(ids []tree.NodeID) ([]*storagepb.SubtreeProto, error) {
-			// Request the various subtrees in parallel.
-			// c will carry any retrieved subtrees
-			c := make(chan *storagepb.SubtreeProto, len(ids))
+// getSubtreesAtRev returns a GetSubtreesFunc which reads at the passed in rev.
+func (t *treeTX) getSubtreesAtRev(ctx context.Context, rev int64) cache.GetSubtreesFunc {
+	return func(ids [][]byte) ([]*storagepb.SubtreeProto, error) {
+		// Request the various subtrees in parallel.
+		// c will carry any retrieved subtrees
+		c := make(chan *storagepb.SubtreeProto, len(ids))
 
-			// Spawn goroutines for each request
-			g, gctx := errgroup.WithContext(ctx)
-			for _, id := range ids {
-				id := id
-				g.Go(func() error {
-					st, err := t.getSubtree(gctx, rev, id)
-					if err != nil {
-						return err
-					}
-					c <- st
-					return nil
-				})
-			}
-			if err := g.Wait(); err != nil {
-				return nil, err
-			}
-			close(c)
-
-			// Now wait for the goroutines to signal their completion, and collect
-			// the results.
-			ret := make([]*storagepb.SubtreeProto, 0, len(ids))
-			for st := range c {
-				if st != nil {
-					ret = append(ret, st)
+		// Spawn goroutines for each request
+		g, gctx := errgroup.WithContext(ctx)
+		for _, id := range ids {
+			id := id
+			g.Go(func() error {
+				st, err := t.getSubtree(gctx, rev, id)
+				if err != nil {
+					return err
 				}
+				c <- st
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
+		close(c)
+
+		// Now wait for the goroutines to signal their completion, and collect
+		// the results.
+		ret := make([]*storagepb.SubtreeProto, 0, len(ids))
+		for st := range c {
+			if st != nil {
+				ret = append(ret, st)
 			}
-			return ret, nil
-		})
+		}
+		return ret, nil
+	}
 }
 
 // SetMerkleNodes stores the provided merkle nodes at the writeRevision of the
@@ -463,24 +418,11 @@ func (t *treeTX) SetMerkleNodes(ctx context.Context, nodes []tree.Node) error {
 	if t.stx == nil {
 		return ErrTransactionClosed
 	}
-
 	writeRev, err := t.writeRev(ctx)
 	if err != nil {
 		return err
 	}
-
-	for _, n := range nodes {
-		err := t.cache.SetNodeHash(
-			n.NodeID,
-			n.Hash,
-			func(nID tree.NodeID) (*storagepb.SubtreeProto, error) {
-				return t.getSubtree(ctx, writeRev-1, nID)
-			})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return t.cache.SetNodes(nodes, t.getSubtreesAtRev(ctx, writeRev-1))
 }
 
 func checkDatabaseAccessible(ctx context.Context, client *spanner.Client) error {
@@ -489,38 +431,4 @@ func checkDatabaseAccessible(ctx context.Context, client *spanner.Client) error 
 	rows := client.Single().Query(ctx, stmt)
 	defer rows.Stop()
 	return rows.Do(func(row *spanner.Row) error { return nil })
-}
-
-// snapshotTX provides the standard methods for snapshot-based TXs.
-type snapshotTX struct {
-	client *spanner.Client
-
-	// mu guards stx, which is set to nil when the TX is closed.
-	mu  sync.RWMutex
-	stx spanRead
-	ls  *logStorage
-}
-
-func (t *snapshotTX) Commit(ctx context.Context) error {
-	// No work required to commit snapshot transactions
-	return t.Close()
-}
-
-func (t *snapshotTX) Rollback() error {
-	return t.Close()
-}
-
-func (t *snapshotTX) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.stx == nil {
-		return ErrTransactionClosed
-	}
-	if stx, ok := t.stx.(*spanner.ReadOnlyTransaction); ok {
-		glog.V(1).Infof("Closed log snapshot %p", stx)
-		stx.Close()
-	}
-	t.stx = nil
-
-	return nil
 }

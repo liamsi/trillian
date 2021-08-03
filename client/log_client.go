@@ -61,18 +61,6 @@ func NewFromTree(client trillian.TrillianLogClient, config *trillian.Tree, root 
 	return New(config.GetTreeId(), client, verifier, root), nil
 }
 
-// AddSequencedLeafAndWait adds a leaf at a specific index to the log.
-// Blocks and continuously updates the trusted root until it has been included in a signed log root.
-func (c *LogClient) AddSequencedLeafAndWait(ctx context.Context, data []byte, index int64) error {
-	if err := c.AddSequencedLeaf(ctx, data, index); err != nil {
-		return fmt.Errorf("QueueLeaf(): %v", err)
-	}
-	if err := c.WaitForInclusion(ctx, data); err != nil {
-		return fmt.Errorf("WaitForInclusion(): %v", err)
-	}
-	return nil
-}
-
 // AddLeaf adds leaf to the append only log.
 // Blocks and continuously updates the trusted root until a successful inclusion proof
 // can be retrieved.
@@ -84,21 +72,6 @@ func (c *LogClient) AddLeaf(ctx context.Context, data []byte) error {
 		return fmt.Errorf("WaitForInclusion(): %v", err)
 	}
 	return nil
-}
-
-// GetByIndex returns a single leaf at the requested index.
-func (c *LogClient) GetByIndex(ctx context.Context, index int64) (*trillian.LogLeaf, error) {
-	resp, err := c.client.GetLeavesByIndex(ctx, &trillian.GetLeavesByIndexRequest{
-		LogId:     c.LogID,
-		LeafIndex: []int64{index},
-	})
-	if err != nil {
-		return nil, err
-	}
-	if got, want := len(resp.Leaves), 1; got != want {
-		return nil, fmt.Errorf("len(leaves): %v, want %v", got, want)
-	}
-	return resp.Leaves[0], nil
 }
 
 // ListByIndex returns the requested leaves by index.
@@ -293,45 +266,6 @@ func (c *LogClient) WaitForInclusion(ctx context.Context, data []byte) error {
 	}
 }
 
-// VerifyInclusion ensures that the given leaf data has been included in the log.
-func (c *LogClient) VerifyInclusion(ctx context.Context, data []byte) error {
-	leaf := c.BuildLeaf(data)
-	root := c.GetRoot()
-	ok, err := c.getAndVerifyInclusionProof(ctx, leaf.MerkleLeafHash, root)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("no proof")
-	}
-	return nil
-}
-
-// GetAndVerifyInclusionAtIndex ensures that the given leaf data has been included in the log at a particular index.
-func (c *LogClient) GetAndVerifyInclusionAtIndex(ctx context.Context, data []byte, index int64, sth *types.LogRootV1) error {
-	resp, err := c.client.GetInclusionProof(ctx,
-		&trillian.GetInclusionProofRequest{
-			LogId:     c.LogID,
-			LeafIndex: index,
-			TreeSize:  int64(sth.TreeSize),
-		})
-	if err != nil {
-		return err
-	}
-
-	// If this request hit a more out-of-date server instance than the GetSLR request,
-	// there may be an empty proof and an earlier SLR.
-	var proofRoot types.LogRootV1
-	if err := proofRoot.UnmarshalBinary(resp.GetSignedLogRoot().GetLogRoot()); err != nil {
-		return err
-	}
-	if proofRoot.TreeSize < sth.TreeSize {
-		return fmt.Errorf("response for InclusionProof has a smaller (%d) root than requested (%d)", proofRoot.TreeSize, sth.TreeSize)
-	}
-
-	return c.VerifyInclusionAtIndex(sth, data, index, resp.Proof.Hashes)
-}
-
 func (c *LogClient) getAndVerifyInclusionProof(ctx context.Context, leafHash []byte, sth *types.LogRootV1) (bool, error) {
 	resp, err := c.client.GetInclusionProofByHash(ctx,
 		&trillian.GetInclusionProofByHashRequest{
@@ -351,17 +285,6 @@ func (c *LogClient) getAndVerifyInclusionProof(ctx context.Context, leafHash []b
 		}
 	}
 	return true, nil
-}
-
-// AddSequencedLeaf adds a leaf at a particular index.
-func (c *LogClient) AddSequencedLeaf(ctx context.Context, data []byte, index int64) error {
-	leaf := c.BuildLeaf(data)
-	leaf.LeafIndex = index
-	_, err := c.client.AddSequencedLeaf(ctx, &trillian.AddSequencedLeafRequest{
-		LogId: c.LogID,
-		Leaf:  leaf,
-	})
-	return err
 }
 
 // AddSequencedLeaves adds any number of pre-sequenced leaves to the log.

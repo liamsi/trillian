@@ -27,9 +27,8 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
-	"github.com/google/trillian/merkle/hashers"
+	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/storage/cloudspanner/spannerpb"
@@ -38,6 +37,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -45,8 +45,6 @@ const (
 	seqDataByMerkleHashIdx = "SequenceByMerkleHash"
 	seqDataTbl             = "SequencedLeafData"
 	unseqTable             = "Unsequenced"
-
-	unsequencedCountSQL = "SELECT Unsequenced.TreeID, COUNT(1) FROM Unsequenced GROUP BY TreeID"
 
 	// t.TreeType: 1 = Log, 3 = PreorderedLog.
 	// t.TreeState: 1 = Active, 5 = Draining.
@@ -143,28 +141,37 @@ func (ls *logStorage) CheckDatabaseAccessible(ctx context.Context) error {
 	return checkDatabaseAccessible(ctx, ls.ts.client)
 }
 
-func (ls *logStorage) Snapshot(ctx context.Context) (storage.ReadOnlyLogTX, error) {
+func (ls *logStorage) readOnlyTX() *spanner.ReadOnlyTransaction {
 	var staleness spanner.TimestampBound
 	if ls.opts.ReadOnlyStaleness > 0 {
 		staleness = spanner.ExactStaleness(ls.opts.ReadOnlyStaleness)
 	} else {
 		staleness = spanner.StrongRead()
 	}
+	return ls.ts.client.ReadOnlyTransaction().WithTimestampBound(staleness)
+}
 
-	snapshotTX := &snapshotTX{
-		client: ls.ts.client,
-		stx:    ls.ts.client.ReadOnlyTransaction().WithTimestampBound(staleness),
-		ls:     ls,
+func (ls *logStorage) GetActiveLogIDs(ctx context.Context) ([]int64, error) {
+	ids := []int64{}
+	// We have to use SQL as Read() doesn't work against an index.
+	stmt := spanner.NewStatement(getActiveLogIDsSQL)
+	rows := ls.readOnlyTX().Query(ctx, stmt)
+	if err := rows.Do(func(r *spanner.Row) error {
+		var id int64
+		if err := r.Columns(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+		return nil
+	}); err != nil {
+		glog.Warningf("GetActiveLogIDs: %v", err)
+		return nil, fmt.Errorf("problem executing getActiveLogIDsSQL: %v", err)
 	}
-	return &readOnlyLogTX{snapshotTX}, nil
+	return ids, nil
 }
 
 func newLogCache(tree *trillian.Tree) (*cache.SubtreeCache, error) {
-	hasher, err := hashers.NewLogHasher(tree.HashStrategy)
-	if err != nil {
-		return nil, err
-	}
-	return cache.NewLogSubtreeCache(defLogStrata, hasher), nil
+	return cache.NewLogSubtreeCache(rfc6962.DefaultHasher), nil
 }
 
 func (ls *logStorage) begin(ctx context.Context, tree *trillian.Tree, readonly bool, stx spanRead) (*logTX, error) {
@@ -183,7 +190,7 @@ func (ls *logStorage) begin(ctx context.Context, tree *trillian.Tree, readonly b
 	if err := ltx.getLatestRoot(ctx); err == storage.ErrTreeNeedsInit {
 		return ltx, err
 	} else if err != nil {
-		tx.Rollback()
+		tx.Close()
 		return nil, err
 	}
 	return ltx, nil
@@ -298,10 +305,9 @@ func (ls *logStorage) AddSequencedLeaves(ctx context.Context, tree *trillian.Tre
 	errs := make(chan error, 1)
 	var wg sync.WaitGroup
 	for i, l := range leaves {
-		var err error
-		l.QueueTimestamp, err = ptypes.TimestampProto(ts)
-		if err != nil {
-			return nil, fmt.Errorf("got invalid queue timestamp: %v", err)
+		l.QueueTimestamp = timestamppb.New(ts)
+		if err := l.QueueTimestamp.CheckValid(); err != nil {
+			return nil, fmt.Errorf("got invalid queue timestamp: %w", err)
 		}
 
 		// Capture the values for later reference in the MutationResultFunc below.
@@ -309,6 +315,7 @@ func (ls *logStorage) AddSequencedLeaves(ctx context.Context, tree *trillian.Tre
 		res[i] = &trillian.QueuedLogLeaf{Status: okProto}
 
 		wg.Add(1)
+		var err error
 		// The insert of the LeafData and SequencedLeafData must happen atomically.
 		m1, err := spanner.InsertStruct(leafDataTbl, leafDataCols{
 			TreeID:              tree.TreeId,
@@ -463,7 +470,6 @@ func (tx *logTX) LatestSignedLogRoot(ctx context.Context) (*trillian.SignedLogRo
 		TimestampNanos: uint64(currentSTH.TsNanos),
 		RootHash:       currentSTH.RootHash,
 		TreeSize:       uint64(currentSTH.TreeSize),
-		Revision:       uint64(currentSTH.TreeRevision),
 		Metadata:       currentSTH.Metadata,
 	}).MarshalBinary()
 	if err != nil {
@@ -472,11 +478,7 @@ func (tx *logTX) LatestSignedLogRoot(ctx context.Context) (*trillian.SignedLogRo
 
 	// We already read the latest root as part of starting the transaction (in
 	// order to calculate the writeRevision), so we just return that data here:
-	return &trillian.SignedLogRoot{
-		KeyHint:          types.SerializeKeyHint(tx.treeID),
-		LogRoot:          logRoot,
-		LogRootSignature: currentSTH.Signature,
-	}, nil
+	return &trillian.SignedLogRoot{LogRoot: logRoot}, nil
 }
 
 // StoreSignedLogRoot stores the provided root.
@@ -496,10 +498,6 @@ func (tx *logTX) StoreSignedLogRoot(ctx context.Context, root *trillian.SignedLo
 		return err
 	}
 
-	if got, want := int64(logRoot.Revision), writeRev; got != want {
-		return status.Errorf(codes.Internal, "root.Revision: %v, want %v", got, want)
-	}
-
 	m := spanner.Insert(
 		"TreeHeads",
 		[]string{
@@ -516,7 +514,7 @@ func (tx *logTX) StoreSignedLogRoot(ctx context.Context, root *trillian.SignedLo
 			int64(logRoot.TimestampNanos),
 			int64(logRoot.TreeSize),
 			logRoot.RootHash,
-			root.LogRootSignature,
+			[]byte{},
 			writeRev,
 			logRoot.Metadata,
 		})
@@ -543,10 +541,9 @@ func readLeaves(ctx context.Context, stx *spanner.ReadOnlyTransaction, logID int
 		if err := r.Columns(&l.LeafIdentityHash, &l.LeafValue, &l.ExtraData, &qTimestamp); err != nil {
 			return err
 		}
-		var err error
-		l.QueueTimestamp, err = ptypes.TimestampProto(time.Unix(0, qTimestamp))
-		if err != nil {
-			return fmt.Errorf("got invalid queue timestamp: %v", err)
+		l.QueueTimestamp = timestamppb.New(time.Unix(0, qTimestamp))
+		if err := l.QueueTimestamp.CheckValid(); err != nil {
+			return fmt.Errorf("got invalid queue timestamp: %w", err)
 		}
 		f(&l)
 		return nil
@@ -636,10 +633,9 @@ func (tx *logTX) DequeueLeaves(ctx context.Context, limit int, cutoff time.Time)
 			return err
 		}
 
-		var err error
-		l.QueueTimestamp, err = ptypes.TimestampProto(time.Unix(0, qe.timestamp))
-		if err != nil {
-			return fmt.Errorf("got invalid queue timestamp: %v", err)
+		l.QueueTimestamp = timestamppb.New(time.Unix(0, qe.timestamp))
+		if err := l.QueueTimestamp.CheckValid(); err != nil {
+			return fmt.Errorf("got invalid queue timestamp: %w", err)
 		}
 		k := string(l.LeafIdentityHash)
 		if tx.dequeued[k] != nil {
@@ -685,10 +681,10 @@ func (tx *logTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillian.L
 			return fmt.Errorf("attempting to assign unknown merkleleafhash %v", l.MerkleLeafHash)
 		}
 
-		iTimestamp, err := ptypes.Timestamp(l.IntegrateTimestamp)
-		if err != nil {
-			return fmt.Errorf("got invalid integrate timestamp: %v", err)
+		if err := l.IntegrateTimestamp.CheckValid(); err != nil {
+			return fmt.Errorf("got invalid integrate timestamp: %w", err)
 		}
+		iTimestamp := l.IntegrateTimestamp.AsTime()
 
 		// Add the sequence mapping...
 		m1, err := spanner.InsertStruct(seqDataTbl, sequencedLeafDataCols{
@@ -711,17 +707,6 @@ func (tx *logTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillian.L
 	}
 
 	return nil
-}
-
-// GetSequencedLeafCount returns the number of leaves integrated into the tree
-// at the time the transaction was started.
-func (tx *logTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
-	currentSTH, err := tx.currentSTH(ctx)
-	if err != nil {
-		return -1, err
-	}
-
-	return currentSTH.TreeSize, nil
 }
 
 // leafmap is a map of LogLeaf by sequence number which knows how to populate
@@ -747,14 +732,13 @@ func (l leafmap) addFullRow(seqLeaves map[string]sequencedLeafDataCols) func(r *
 			LeafIndex:        seqLeaf.SequenceNumber,
 			LeafIdentityHash: leafData.LeafIdentityHash,
 		}
-		var err error
-		leaf.QueueTimestamp, err = ptypes.TimestampProto(time.Unix(0, leafData.QueueTimestampNanos))
-		if err != nil {
-			return fmt.Errorf("got invalid queue timestamp %v", err)
+		leaf.QueueTimestamp = timestamppb.New(time.Unix(0, leafData.QueueTimestampNanos))
+		if err := leaf.QueueTimestamp.CheckValid(); err != nil {
+			return fmt.Errorf("got invalid queue timestamp: %w", err)
 		}
-		leaf.IntegrateTimestamp, err = ptypes.TimestampProto(time.Unix(0, seqLeaf.IntegrateTimestampNanos))
-		if err != nil {
-			return fmt.Errorf("got invalid integrate timestamp %v", err)
+		leaf.IntegrateTimestamp = timestamppb.New(time.Unix(0, seqLeaf.IntegrateTimestampNanos))
+		if err := leaf.IntegrateTimestamp.CheckValid(); err != nil {
+			return fmt.Errorf("got invalid integrate timestamp: %w", err)
 		}
 
 		l[seqLeaf.SequenceNumber] = leaf
@@ -775,9 +759,9 @@ func (b leavesByHash) addRow(r *spanner.Row) error {
 	if err := r.Columns(&h, &v, &ed, &qTimestamp); err != nil {
 		return err
 	}
-	queueTimestamp, err := ptypes.TimestampProto(time.Unix(0, qTimestamp))
-	if err != nil {
-		return fmt.Errorf("got invalid queue timestamp: %v", err)
+	queueTimestamp := timestamppb.New(time.Unix(0, qTimestamp))
+	if err := queueTimestamp.CheckValid(); err != nil {
+		return fmt.Errorf("got invalid queue timestamp: %w", err)
 	}
 
 	leaves, ok := b[string(h)]
@@ -808,102 +792,6 @@ func (tx *logTX) populateLeafData(ctx context.Context, byHash leavesByHash) erro
 	cols := []string{colLeafIdentityHash, colLeafValue, colExtraData, colQueueTimestampNanos}
 	rows := tx.stx.Read(ctx, leafDataTbl, spanner.KeySets(keySet...), cols)
 	return rows.Do(byHash.addRow)
-}
-
-// validateIndices ensures that all indices are between 0 and treeSize-1.
-func validateIndices(indices []int64, treeSize int64) error {
-	maxIndex := treeSize - 1
-	for _, i := range indices {
-		if i < 0 {
-			return status.Errorf(codes.InvalidArgument, "index %d is < 0", i)
-		}
-		if i > maxIndex {
-			return status.Errorf(codes.OutOfRange, "index %d is > highest index in current tree %d", i, maxIndex)
-		}
-	}
-	return nil
-}
-
-// GetLeavesByIndex returns the leaves corresponding to the given indices.
-func (tx *logTX) GetLeavesByIndex(ctx context.Context, indices []int64) ([]*trillian.LogLeaf, error) {
-	// We need the latest root to validate the indices are within range.
-	currentSTH, err := tx.currentSTH(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := validateIndices(indices, currentSTH.TreeSize); err != nil {
-		return nil, err
-	}
-
-	// TODO: replace with INNER JOIN when spannertest supports JOINs
-	// https://github.com/googleapis/google-cloud-go/tree/master/spanner/spannertest
-	stmt := spanner.NewStatement(
-		`SELECT 
-		   TreeID,
-		   SequenceNumber,
-		   LeafIdentityHash,
-		   MerkleLeafHash, 
-		   IntegrateTimestampNanos
-		FROM 
-		   SequencedLeafData
-		WHERE 
-		   TreeID = @tree_id AND 
-		   SequenceNumber IN UNNEST(@seq_nums)`)
-	stmt.Params["tree_id"] = tx.treeID
-	stmt.Params["seq_nums"] = indices
-	seqLeaves := make(map[string]sequencedLeafDataCols)
-	if err := tx.stx.Query(ctx, stmt).Do(func(r *spanner.Row) error {
-		var seqLeaf sequencedLeafDataCols
-		if err := r.ToStruct(&seqLeaf); err != nil {
-			return err
-		}
-		seqLeaves[string(seqLeaf.LeafIdentityHash)] = seqLeaf
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	idHashes := make([][]byte, 0, len(seqLeaves))
-	for _, l := range seqLeaves {
-		idHashes = append(idHashes, l.LeafIdentityHash)
-	}
-
-	stmt = spanner.NewStatement(
-		`SELECT 
-		   TreeID,
-		   LeafIdentityHash, 
-		   LeafValue, 
-		   ExtraData, 
-		   QueueTimestampNanos
-		 FROM 
-		   SequencedLeafData
-		 WHERE 
-		   TreeID = @tree_id AND 
-		   LeafIdentityHash IN UNNEST(@id_hashes)`)
-	stmt.Params["tree_id"] = tx.treeID
-	stmt.Params["id_hashes"] = idHashes
-	leaves := make(leafmap)
-	if err := tx.stx.Query(ctx, stmt).Do(leaves.addFullRow(seqLeaves)); err != nil {
-		return nil, err
-	}
-
-	// Sanity check that we got everything we wanted
-	if got, want := len(leaves), len(indices); got != want {
-		return nil, fmt.Errorf("inconsistency: got %d leaves, want %d", got, want)
-	}
-
-	// Sort the leaves so they are in the same order as the indices.
-	ret := make([]*trillian.LogLeaf, 0, len(indices))
-	for _, i := range indices {
-		l, ok := leaves[i]
-		if !ok {
-			return nil, fmt.Errorf("inconsistency: missing data for index %d", i)
-		}
-		ret = append(ret, l)
-	}
-
-	return ret, nil
 }
 
 func validateRange(start, count, treeSize int64) error {
@@ -1093,53 +981,6 @@ type QueuedEntry struct {
 	leaf      *trillian.LogLeaf
 	bucket    int64
 	timestamp int64
-}
-
-// readOnlyLogTX implements storage.ReadOnlyLogTX.
-type readOnlyLogTX struct {
-	*snapshotTX
-}
-
-func (tx *readOnlyLogTX) GetActiveLogIDs(ctx context.Context) ([]int64, error) {
-	tx.mu.RLock()
-	defer tx.mu.RUnlock()
-	if tx.stx == nil {
-		return nil, ErrTransactionClosed
-	}
-
-	ids := []int64{}
-	// We have to use SQL as Read() doesn't work against an index.
-	stmt := spanner.NewStatement(getActiveLogIDsSQL)
-	rows := tx.stx.Query(ctx, stmt)
-	if err := rows.Do(func(r *spanner.Row) error {
-		var id int64
-		if err := r.Columns(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-		return nil
-	}); err != nil {
-		glog.Warningf("GetActiveLogIDs: %v", err)
-		return nil, fmt.Errorf("problem executing getActiveLogIDsSQL: %v", err)
-	}
-	return ids, nil
-}
-
-func (tx *readOnlyLogTX) GetUnsequencedCounts(ctx context.Context) (storage.CountByLogID, error) {
-	stmt := spanner.NewStatement(unsequencedCountSQL)
-	ret := make(storage.CountByLogID)
-	rows := tx.stx.Query(ctx, stmt)
-	if err := rows.Do(func(r *spanner.Row) error {
-		var id, c int64
-		if err := r.Columns(&id, &c); err != nil {
-			return err
-		}
-		ret[id] = c
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("problem executing unsequencedCountSQL: %v", err)
-	}
-	return ret, nil
 }
 
 // LogLeaf sorting boilerplate below.

@@ -21,10 +21,10 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // NewAdminStorage returns a storage.AdminStorage implementation backed by
@@ -57,50 +57,25 @@ func (s *memoryAdminStorage) CheckDatabaseAccessible(ctx context.Context) error 
 
 type adminTX struct {
 	ms *TreeStorage
-	// mu guards reads/writes on closed, which happen only on
-	// Commit/Rollback/IsClosed/Close methods.
-	// We don't check closed on *all* methods (apart from the ones above),
-	// as we trust tx to keep tabs on its state (and consequently fail to do
-	// queries after closed).
+
+	// mu guards reads/writes on closed, which happen on Commit/Close methods.
+	//
+	// We don't check closed on methods apart from the ones above, as we trust tx
+	// to keep tabs on its state, and hence fail to do queries after closed.
 	mu     sync.RWMutex
 	closed bool
 }
 
 func (t *adminTX) Commit() error {
-	// TODO(al): The admin implementation isn't transactional
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.closed = true
-	return nil
-}
-
-func (t *adminTX) Rollback() error {
-	// TODO(al): The admin implementation isn't transactional
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.closed = true
-	return nil
-}
-
-func (t *adminTX) IsClosed() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.closed
+	// TODO(al): The admin implementation isn't transactional.
+	return t.Close()
 }
 
 func (t *adminTX) Close() error {
-	// Acquire and release read lock manually, without defer, as if the txn
-	// is not closed Rollback() will attempt to acquire the rw lock.
-	t.mu.RLock()
-	closed := t.closed
-	t.mu.RUnlock()
-	if !closed {
-		err := t.Rollback()
-		if err != nil {
-			glog.Warningf("Rollback error on Close(): %v", err)
-		}
-		return err
-	}
+	// TODO(al): The admin implementation isn't transactional.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
 	return nil
 }
 
@@ -113,17 +88,6 @@ func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, er
 	defer tree.RUnlock()
 
 	return tree.meta, nil
-}
-
-func (t *adminTX) ListTreeIDs(ctx context.Context, includeDeleted bool) ([]int64, error) {
-	t.ms.mu.RLock()
-	defer t.ms.mu.RUnlock()
-
-	var ret []int64
-	for _, v := range t.ms.trees {
-		ret = append(ret, v.meta.TreeId)
-	}
-	return ret, nil
 }
 
 func (t *adminTX) ListTrees(ctx context.Context, includeDeleted bool) ([]*trillian.Tree, error) {
@@ -154,12 +118,12 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 
 	meta := proto.Clone(tr).(*trillian.Tree)
 	meta.TreeId = id
-	meta.CreateTime, err = ptypes.TimestampProto(now)
-	if err != nil {
+	meta.CreateTime = timestamppb.New(now)
+	if err := meta.CreateTime.CheckValid(); err != nil {
 		return nil, err
 	}
-	meta.UpdateTime, err = ptypes.TimestampProto(now)
-	if err != nil {
+	meta.UpdateTime = timestamppb.New(now)
+	if err := meta.UpdateTime.CheckValid(); err != nil {
 		return nil, err
 	}
 
@@ -187,9 +151,8 @@ func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(
 		return nil, err
 	}
 
-	var err error
-	tree.UpdateTime, err = ptypes.TimestampProto(time.Now())
-	if err != nil {
+	tree.UpdateTime = timestamppb.New(time.Now())
+	if err := tree.UpdateTime.CheckValid(); err != nil {
 		return nil, err
 	}
 	return tree, nil

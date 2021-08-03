@@ -19,34 +19,29 @@ import (
 	"time"
 
 	"github.com/google/trillian"
+	"github.com/google/trillian/merkle/compact"
+	"github.com/google/trillian/storage/tree"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-// ReadOnlyLogTX provides a read-only view into log data.
-// A ReadOnlyLogTX, unlike ReadOnlyLogTreeTX, is not tied to a particular tree.
-type ReadOnlyLogTX interface {
-	LogMetadata
-
-	// Commit ensures the data read by the TX is consistent in the database. Only after Commit the
-	// data read should be regarded as valid.
-	Commit(context.Context) error
-
-	// Rollback discards the read-only TX.
-	Rollback() error
-
-	// Close attempts to Rollback the TX if it's open, it's a noop otherwise.
-	Close() error
-}
+// ErrTreeNeedsInit is returned when calling methods on an uninitialised tree.
+var ErrTreeNeedsInit = status.Error(codes.FailedPrecondition, "tree needs initialising")
 
 // ReadOnlyLogTreeTX provides a read-only view into the Log data.
 // A ReadOnlyLogTreeTX can only read from the tree specified in its creation.
 type ReadOnlyLogTreeTX interface {
-	ReadOnlyTreeTX
+	// Commit applies the operations performed to the underlying storage. It must
+	// be called before any reads from storage are considered consistent.
+	Commit(context.Context) error
 
-	// GetSequencedLeafCount returns the total number of leaves that have been integrated into the
-	// tree via sequencing.
-	GetSequencedLeafCount(ctx context.Context) (int64, error)
-	// GetLeavesByIndex returns leaf metadata and data for a set of specified sequenced leaf indexes.
-	GetLeavesByIndex(ctx context.Context, leaves []int64) ([]*trillian.LogLeaf, error)
+	// Close rolls back the transaction if it wasn't committed or closed
+	// previously. Resources are cleaned up regardless of the success, and the
+	// transaction should not be used after it.
+	Close() error
+
+	// GetMerkleNodes returns tree nodes by their IDs, in the requested order.
+	GetMerkleNodes(ctx context.Context, ids []compact.NodeID) ([]tree.Node, error)
 	// GetLeavesByRange returns leaf data for a range of indexes. The returned
 	// slice is a contiguous prefix of leaves in [start, start+count) ordered by
 	// LeafIndex. It will be shorter than `count` if the requested range has
@@ -65,13 +60,16 @@ type ReadOnlyLogTreeTX interface {
 }
 
 // LogTreeTX is the transactional interface for reading/updating a Log.
-// It extends the basic TreeTX interface with Log specific methods.
-// After a call to Commit or Rollback implementations must be in a clean state and have
-// released any resources owned by the LogTX.
+// After a call to Commit or Close implementations must be in a clean state and have
+// released any resources owned by the LogTreeTX.
 // A LogTreeTX can only modify the tree specified in its creation.
 type LogTreeTX interface {
 	ReadOnlyLogTreeTX
-	TreeWriter
+
+	// SetMerkleNodes writes the nodes, at the write revision.
+	//
+	// TODO(pavelkalinnikov): Use tiles instead, here and in GetMerkleNodes.
+	SetMerkleNodes(ctx context.Context, nodes []tree.Node) error
 
 	// StoreSignedLogRoot stores a freshly created SignedLogRoot.
 	StoreSignedLogRoot(ctx context.Context, root *trillian.SignedLogRoot) error
@@ -107,10 +105,13 @@ type LogTreeTX interface {
 
 // ReadOnlyLogStorage represents a narrowed read-only view into a LogStorage.
 type ReadOnlyLogStorage interface {
-	DatabaseChecker
+	// CheckDatabaseAccessible returns nil if the database is accessible, or an
+	// error otherwise.
+	CheckDatabaseAccessible(context.Context) error
 
-	// Snapshot starts a read-only transaction not tied to any particular tree.
-	Snapshot(ctx context.Context) (ReadOnlyLogTX, error)
+	// GetActiveLogIDs returns a list of the IDs of all the logs that are
+	// configured in storage and are eligible to have entries sequenced.
+	GetActiveLogIDs(ctx context.Context) ([]int64, error)
 
 	// SnapshotForTree starts a read-only transaction for the specified treeID.
 	// Commit must be called when the caller is finished with the returned object,
@@ -168,14 +169,4 @@ type LogStorage interface {
 	// TODO(pavelkalinnikov): Not checking values of the occupied indices might
 	// be a good optimization. Could also be optional.
 	AddSequencedLeaves(ctx context.Context, tree *trillian.Tree, leaves []*trillian.LogLeaf, timestamp time.Time) ([]*trillian.QueuedLogLeaf, error)
-}
-
-// CountByLogID is a map of total number of items keyed by log ID.
-type CountByLogID map[int64]int64
-
-// LogMetadata provides access to information about the logs in storage
-type LogMetadata interface {
-	// GetActiveLogIDs returns a list of the IDs of all the logs that are
-	// configured in storage and are eligible to have entries sequenced.
-	GetActiveLogIDs(ctx context.Context) ([]int64, error)
 }

@@ -68,7 +68,7 @@ var dbCount struct {
 
 func uniqueDBName(project, instance string) string {
 	// Unique per test binary invocation
-	timestamp := time.Now().UTC().Format("jan-02-15-04-05")
+	timestamp := time.Now().UTC().Format("Jan-02-15-04-05")
 	testBinary := strings.ToLower(strings.Replace(path.Base(os.Args[0]), ".test", "", 1))
 	invocationID := fmt.Sprintf("%s-%s", timestamp, testBinary)
 
@@ -135,7 +135,6 @@ func cleanTestDB(ctx context.Context, t *testing.T, db *spanner.Client) {
 			"LeafData",
 			"SequencedLeafData",
 			"Unsequenced",
-			"MapLeafData",
 		} {
 			mutations = append(mutations, spanner.Delete(table, spanner.AllKeys()))
 		}

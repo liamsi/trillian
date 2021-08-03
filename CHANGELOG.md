@@ -2,10 +2,123 @@
 
 ## HEAD
 
+* GCP terraform script updated. GKE 1.19 and updated CPU type to E2
+
+### Dependency updates
+ * Upgraded to etcd v3 in order to allow grpc to be upgraded (#2195)
+   * etcd was `v0.5.0-alpha.5`, now `v3.5.0-alpha.0`
+ * grpc upgraded from `v1.29.1` to `v1.36.0`
+ * certificate-transparency-go from `v1.0.21` to
+   `v1.1.2-0.20210512142713-bed466244fa6`
+
+### Cleanup
+ * Removed the deprecated crypto.NewSHA256Signer function.
+ * Finish removing the `LogMetadata.GetUnsequencedCounts()` method.
+ * Removed the following APIs:
+   - `TrillianLog.GetLeavesByHash`
+   - `TrillianLog.GetLeavesByIndex`
+   - `TrillianLog.QueueLeaves`
+ * Removed the incomplete Postgres storage backend (#1298).
+ * Deprecated `LogRootV1.Revision` field.
+ * Moved `rfc6962` hasher one directory up to eliminate empty leftover package.
+
+### Storage refactoring
+ * `NodeReader.GetMerkleNodes` does not accept revisions anymore. The
+   implementations must use the transaction's `ReadRevision` instead.
+ * `TreeStorage` migrated to using `compact.NodeID` type suitable for logs.
+ * Removed the tree storage `ReadRevision` and `WriteRevision` methods.
+   Revisions are now an implementation detail of the current storages. The
+   change allows log implementations which don't need revisions.
+ * Removed `Rollback` methods from storage interfaces, as `Close` is enough to
+   cover the use-case.
+ * Removed the unused `IsOpen` and `IsClosed` methods from transaction
+   interfaces.
+ * Removed the `ReadOnlyLogTX` interface, and put its only used
+   `GetActiveLogIDs` method to `LogStorage`.
+ * Inlined the `LogMetadata` interface to `ReadOnlyLogStorage`.
+ * Inlined the `TreeStorage` interfaces to `LogStorage`.
+ * Removed the need for the storage layer to return ephemeral node hashes. The
+   application layer always requests for complete subtree nodes comprising the
+   compact ranges corresponding to the requests.
+ * Removed the single-tile callback from `SubtreeCache`, it uses only
+   `GetSubtreesFunc` now.
+ * Removed `SetSubtreesFunc` callback from `SubtreeCache`. The tiles should be
+   written by the caller now, i.e. the caller must invoke the callback.
+ * TODO(pavelkalinnikov): More changes are coming, and will be added here.
+
+## v1.3.13
+[Published 2021-02-16](https://github.com/google/trillian/releases/tag/v1.3.13)
+
+### Cleanup
+ * Removed the experimental map API.
+
+## v1.3.12
+[Published 2021-02-16](https://github.com/google/trillian/releases/tag/v1.3.12)
+
+### Misc improvements
+
+ * Removed unused `PeekTokens` method from the `quota.Manager` interface.
+ * Ensure goroutines never block in the subtree cache (#2272).
+ * Breaking unnecessary dependencies for Trillian clients:
+   * Moved verifiers from `merkle` into `merkle/{log,map}verifier`sub-pacakges,
+     reducing the amount of extra baggage inadvertently pulled in by clients.
+  * Concrete hashers have been moved into subpackages, separating them from their
+    registration code, allowing clients to directly pull just the hasher they're
+    interested in and avoid the Trillian/hasher registry+protobuf deps.
+ * Moved some packages intended for internal-only use into `internal` packages:
+   * InMemoryMerkleTree (indended to only be used by Trillian tests)
+ * Removed wrapper for etcd client (#2288).
+ * Moved `--quota_system` and `--storage_system` flags to `main.go` so that they
+   are initialised properly. It might break depending builds relying on these
+   flags. Suggested fix: add the flags to `main.go`.
+ * Made signer tolerate mastership election failures [#1150].
+ * `testdb` no longer accepts the `--test_mysql_uri` flag, and instead honours the
+   `TEST_MYSQL_URI` ENV var. This makes it easier to blanket configure tests to use a
+   specific test DB instance.
+ * Removed experimental Skylog folder (#2297).
+ * Fixed a race condition in the operation manager that should only affect tests
+   (#2302).
+ * Run gofumpt formatter on the whole repository (#2315).
+ * Refactor signer operation loop (#2294).
+
+### Upgrades
+ * Dockerfiles are now based on Go 1.13 image.
+ * The etcd is now pinned to v3.4.12.
+ * The golangci-lint suite is now at v1.36.0.
+ * CI/CD has migrated from Travis to Google Cloud Build.
+ * prometheus from 1.7.1 to 1.9.0 (#2239, #2270).
+ * go-cmp from 0.5.2 to 0.5.4 (#2262).
+ * apache/beam from 2.26.0+incompatible to 2.27.0+incompatible (#2273).
+ * lib/pq from 1.8.0 to 1.9.0 (#2264).
+ * go-redis from 6.15.8+incompatible to 6.15.9+incompatible (#2215).
 
 
-## v1.3.10 (provisional)
-*Not yet published*
+### Process
+ * Recognise that we do not follow strict semantic versioning practices.
+
+## v1.3.11
+[Published 2020-10-06](https://github.com/google/trillian/releases/tag/v1.3.11)
+
+### Documentation
+
+Added docs which describe the Claimant Model of transparency, a useful
+framework for reasoning about the design and architecture of transparent
+systems.
+
+### Misc improvements
+
+ * Fixed int to string conversion warnings for golang 1.15
+ * Metric improvements for fetched leaf counts
+ * Move tools.go into its own directory to help with dependencies
+
+### Dependency updates
+ * go-grpc-middleware from 1.2.0 to 1.2.2 (#2219, #2229)
+ * stackdriver from 0.13.2 to 0.13.4 (#2220, #2223)
+ * Google api from 0.28.0 to 0.29.0 (#2193)
+
+
+## v1.3.10
+[Published 2020-07-02](https://github.com/google/trillian/releases/tag/v1.3.10)
 
 ### Storage
 

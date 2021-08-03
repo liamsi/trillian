@@ -21,7 +21,6 @@ option java_multiple_files = true;
 option java_outer_classname = "TrillianLogApiProto";
 option java_package = "com.google.trillian.proto";
 
-import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "google/rpc/status.proto";
 import "trillian.proto";
@@ -57,23 +56,7 @@ import "trillian.proto";
 service TrillianLog {
   // QueueLeaf adds a single leaf to the queue of pending leaves for a normal
   // log.
-  rpc QueueLeaf(QueueLeafRequest) returns (QueueLeafResponse) {
-    option (google.api.http) = {
-      post: "/v1beta1/logs/{log_id}/leaves"
-      body: "*"
-    };
-  }
-
-  // AddSequencedLeaf adds a single leaf with an assigned sequence number to a
-  // pre-ordered log.
-  rpc AddSequencedLeaf(AddSequencedLeafRequest)
-      returns (AddSequencedLeafResponse) {
-    option (google.api.http) = {
-      post: "/v1beta1/logs/{log_id}/leaves:sequenced"
-      body: "*"
-    };
-  }
-
+  rpc QueueLeaf(QueueLeafRequest) returns (QueueLeafResponse) {}
 
   // GetInclusionProof returns an inclusion proof for a leaf with a given index
   // in a particular tree.
@@ -81,11 +64,7 @@ service TrillianLog {
   // If the requested tree_size is larger than the server is aware of, the
   // response will include the latest known log root and an empty proof.
   rpc GetInclusionProof(GetInclusionProofRequest)
-      returns (GetInclusionProofResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}/leaves/{leaf_index}:inclusion_proof"
-    };
-  }
+      returns (GetInclusionProofResponse) {}
 
   // GetInclusionProofByHash returns an inclusion proof for any leaves that have
   // the given Merkle hash in a particular tree.
@@ -93,11 +72,7 @@ service TrillianLog {
   // If any of the leaves that match the given Merkle has have a leaf index that
   // is beyond the requested tree size, the corresponding proof entry will be empty.
   rpc GetInclusionProofByHash(GetInclusionProofByHashRequest)
-      returns (GetInclusionProofByHashResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}/leaves:inclusion_by_hash"
-    };
-  }
+      returns (GetInclusionProofByHashResponse) {}
 
   // GetConsistencyProof returns a consistency proof between different sizes of
   // a particular tree.
@@ -105,11 +80,7 @@ service TrillianLog {
   // If the requested tree size is larger than the server is aware of,
   // the response will include the latest known log root and an empty proof.
   rpc GetConsistencyProof(GetConsistencyProofRequest)
-      returns (GetConsistencyProofResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}:consistency_proof"
-    };
-  }
+      returns (GetConsistencyProofResponse) {}
 
   // GetLatestSignedLogRoot returns the latest signed log root for a given tree,
   // and optionally also includes a consistency proof from an earlier tree size
@@ -118,25 +89,7 @@ service TrillianLog {
   // If the earlier tree size is larger than the server is aware of,
   // an InvalidArgument error is returned.
   rpc GetLatestSignedLogRoot(GetLatestSignedLogRootRequest)
-      returns (GetLatestSignedLogRootResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}/roots:latest"
-    };
-  }
-
-  // GetSequencedLeafCount returns the total number of leaves that have been
-  // integrated into the given tree.
-  //
-  // DO NOT USE - FOR DEBUGGING/TEST ONLY
-  //
-  // (Use GetLatestSignedLogRoot then de-serialize the Log Root and use
-  // use the tree size field within.)
-  rpc GetSequencedLeafCount(GetSequencedLeafCountRequest)
-      returns (GetSequencedLeafCountResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}/leaves:sequenced_count"
-    };
-  }
+      returns (GetLatestSignedLogRootResponse) {}
 
   // GetEntryAndProof returns a log leaf and the corresponding inclusion proof
   // to a specified tree size, for a given leaf index in a particular tree.
@@ -145,44 +98,22 @@ service TrillianLog {
   // in scope for the current tree, the returned proof will be for the
   // current tree size rather than the requested tree size.
   rpc GetEntryAndProof(GetEntryAndProofRequest)
-      returns (GetEntryAndProofResponse) {
-    option (google.api.http) = {
-      get: "/v1beta1/logs/{log_id}/leaves/{leaf_index}"
-    };
-  }
+      returns (GetEntryAndProofResponse) {}
 
   // InitLog initializes a particular tree, creating the initial signed log
   // root (which will be of size 0).
-  rpc InitLog(InitLogRequest) returns (InitLogResponse) {
-    option (google.api.http) = {
-      post: "/v1beta1/logs/{log_id}:init"
-    };
-  }
+  rpc InitLog(InitLogRequest) returns (InitLogResponse) {}
 
-
-  // QueueLeaf adds a batch of leaves to the queue of pending leaves for a
-  // normal log.
-  rpc QueueLeaves(QueueLeavesRequest) returns (QueueLeavesResponse) {}
 
   // AddSequencedLeaves adds a batch of leaves with assigned sequence numbers
   // to a pre-ordered log.  The indices of the provided leaves must be contiguous.
   rpc AddSequencedLeaves(AddSequencedLeavesRequest)
       returns (AddSequencedLeavesResponse) {}
 
-  // GetLeavesByIndex returns a batch of leaves whose leaf indices are provided
-  // in the request.
-  rpc GetLeavesByIndex(GetLeavesByIndexRequest)
-      returns (GetLeavesByIndexResponse) {}
-
   // GetLeavesByRange returns a batch of leaves whose leaf indices are in a
   // sequential range.
   rpc GetLeavesByRange(GetLeavesByRangeRequest)
       returns (GetLeavesByRangeResponse) {}
-
-  // GetLeavesByHash returns a batch of leaves which are identified by their
-  // Merkle leaf hash values.
-  rpc GetLeavesByHash(GetLeavesByHashRequest)
-      returns (GetLeavesByHashResponse) {}
 }
 
 // ChargeTo describes the user(s) associated with the request whose quota should
@@ -195,7 +126,7 @@ message ChargeTo {
   // request will be denied.
   //
   // As an example, a Certificate Transparency frontend might set the following
-  // user strings when sending a QueueLeaves request to the Trillian log:
+  // user strings when sending a QueueLeaf request to the Trillian log:
   //   - The requesting IP address.
   //     This would limit the number of requests per IP.
   //   - The "intermediate-<hash>" for each of the intermediate certificates in
@@ -217,16 +148,6 @@ message QueueLeafResponse {
   // its leaf identity hash), then the returned leaf will be the pre-existing
   // leaf entry rather than the submitted leaf.
   QueuedLogLeaf queued_leaf = 2;
-}
-
-message AddSequencedLeafRequest {
-  int64 log_id = 1;
-  LogLeaf leaf = 2;
-  ChargeTo charge_to = 3;
-}
-
-message AddSequencedLeafResponse {
-  QueuedLogLeaf result = 2;
 }
 
 message GetInclusionProofRequest {
@@ -300,19 +221,6 @@ message GetLatestSignedLogRootResponse {
   Proof proof = 3;
 }
 
-// DO NOT USE - FOR DEBUGGING/TEST ONLY
-//
-// (Use GetLatestSignedLogRoot then de-serialize the Log Root and use
-// use the tree size field within.)
-message GetSequencedLeafCountRequest {
-  int64 log_id = 1;
-  ChargeTo charge_to = 2;
-}
-
-message GetSequencedLeafCountResponse {
-  int64 leaf_count = 2;
-}
-
 message GetEntryAndProofRequest {
   int64 log_id = 1;
   int64 leaf_index = 2;
@@ -335,17 +243,6 @@ message InitLogResponse {
   SignedLogRoot created = 1;
 }
 
-message QueueLeavesRequest {
-  int64 log_id = 1;
-  repeated LogLeaf leaves = 2;
-  ChargeTo charge_to = 3;
-}
-
-message QueueLeavesResponse {
-  // Same number and order as in the corresponding request.
-  repeated QueuedLogLeaf queued_leaves = 2;
-}
-
 message AddSequencedLeavesRequest {
   int64 log_id = 1;
   repeated LogLeaf leaves = 2;
@@ -355,18 +252,6 @@ message AddSequencedLeavesRequest {
 message AddSequencedLeavesResponse {
   // Same number and order as in the corresponding request.
   repeated QueuedLogLeaf results = 2;
-}
-
-message GetLeavesByIndexRequest {
-  int64 log_id = 1;
-  repeated int64 leaf_index = 2;
-  ChargeTo charge_to = 5;
-}
-
-message GetLeavesByIndexResponse {
-  // TODO(gbelvin): Response syntax does not allow for some requested leaves to be available, and some not (but using QueuedLogLeaf might)
-  repeated LogLeaf leaves = 2;
-  SignedLogRoot signed_log_root = 3;
 }
 
 message GetLeavesByRangeRequest {
@@ -383,21 +268,6 @@ message GetLeavesByRangeResponse {
   // to return fewer leaves than requested.
   repeated LogLeaf leaves = 1;
   SignedLogRoot signed_log_root = 2;
-}
-
-message GetLeavesByHashRequest {
-  int64 log_id = 1;
-  // The Merkle leaf hash of the leaf to be retrieved.
-  repeated bytes leaf_hash = 2;
-  // If order_by_sequence is set then leaves will be returned in order of ascending
-  // leaf index.
-  bool order_by_sequence = 3;
-  ChargeTo charge_to = 5;
-}
-
-message GetLeavesByHashResponse {
-  repeated LogLeaf leaves = 2;
-  SignedLogRoot signed_log_root = 3;
 }
 
 // QueuedLogLeaf provides the result of submitting an entry to the log.

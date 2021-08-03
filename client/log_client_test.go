@@ -21,13 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto" //nolint:staticcheck
 	"github.com/google/trillian"
 	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/testonly/integration"
 	"github.com/google/trillian/types"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/google/trillian/storage/testdb"
 	stestonly "github.com/google/trillian/storage/testonly"
@@ -42,10 +40,12 @@ func addSequencedLeaves(ctx context.Context, env *integration.LogEnv, client *Lo
 	if len(leaves) == 0 {
 		return nil
 	}
+	dataByIndex := make(map[int64][]byte)
 	for i, l := range leaves {
-		if err := client.AddSequencedLeaf(ctx, l, int64(i)); err != nil {
-			return fmt.Errorf("AddSequencedLeaf(): %v", err)
-		}
+		dataByIndex[int64(i)] = l
+	}
+	if err := client.AddSequencedLeaves(ctx, dataByIndex); err != nil {
+		return fmt.Errorf("AddSequencedLeaves(): %v", err)
 	}
 	env.Sequencer.OperationSingle(ctx)
 	if err := client.WaitForInclusion(ctx, leaves[len(leaves)-1]); err != nil {
@@ -61,7 +61,7 @@ func clientEnvForTest(ctx context.Context, t *testing.T, template *trillian.Tree
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree, err := CreateAndInitTree(ctx, &trillian.CreateTreeRequest{Tree: template}, env.Admin, nil, env.Log)
+	tree, err := CreateAndInitTree(ctx, &trillian.CreateTreeRequest{Tree: template}, env.Admin, env.Log)
 	if err != nil {
 		t.Fatalf("Failed to create log: %v", err)
 	}
@@ -71,34 +71,6 @@ func clientEnvForTest(ctx context.Context, t *testing.T, template *trillian.Tree
 		t.Fatalf("NewFromTree(): %v", err)
 	}
 	return env, client
-}
-
-func TestGetByIndex(t *testing.T) {
-	ctx := context.Background()
-	env, client := clientEnvForTest(ctx, t, stestonly.PreorderedLogTree)
-	defer env.Close()
-
-	// Add a few test leaves.
-	leafData := [][]byte{
-		[]byte("A"),
-		[]byte("B"),
-		[]byte("C"),
-	}
-
-	if err := addSequencedLeaves(ctx, env, client, leafData); err != nil {
-		t.Fatalf("Failed to add leaves: %v", err)
-	}
-
-	for i, l := range leafData {
-		leaf, err := client.GetByIndex(ctx, int64(i))
-		if err != nil {
-			t.Errorf("Failed to GetByIndex(%v): %v", i, err)
-			continue
-		}
-		if got, want := leaf.LeafValue, l; !bytes.Equal(got, want) {
-			t.Errorf("GetByIndex(%v) = %x, want %x", i, got, want)
-		}
-	}
 }
 
 func TestListByIndex(t *testing.T) {
@@ -129,57 +101,6 @@ func TestListByIndex(t *testing.T) {
 	}
 }
 
-func TestVerifyInclusion(t *testing.T) {
-	ctx := context.Background()
-	env, client := clientEnvForTest(ctx, t, stestonly.PreorderedLogTree)
-	defer env.Close()
-
-	// Add a few test leaves.
-	leafData := [][]byte{
-		[]byte("A"),
-		[]byte("B"),
-	}
-
-	if err := addSequencedLeaves(ctx, env, client, leafData); err != nil {
-		t.Fatalf("Failed to add leaves: %v", err)
-	}
-
-	for _, l := range leafData {
-		if err := client.VerifyInclusion(ctx, l); err != nil {
-			t.Errorf("VerifyInclusion(%s) = %v, want nil", l, err)
-		}
-	}
-}
-
-func TestVerifyInclusionAtIndex(t *testing.T) {
-	ctx := context.Background()
-	env, client := clientEnvForTest(ctx, t, stestonly.PreorderedLogTree)
-	defer env.Close()
-
-	// Add a few test leaves.
-	leafData := [][]byte{
-		[]byte("A"),
-		[]byte("B"),
-	}
-
-	if err := addSequencedLeaves(ctx, env, client, leafData); err != nil {
-		t.Fatalf("Failed to add leaves: %v", err)
-	}
-
-	root := client.GetRoot()
-	for i, l := range leafData {
-		if err := client.GetAndVerifyInclusionAtIndex(ctx, l, int64(i), root); err != nil {
-			t.Errorf("VerifyInclusion(%s) = %v, want nil", l, err)
-		}
-	}
-
-	// Ask for inclusion in a too-large tree.
-	root.TreeSize += 1000
-	if err := client.GetAndVerifyInclusionAtIndex(ctx, leafData[0], 0, root); err == nil {
-		t.Errorf("GetAndVerifyInclusionAtIndex(0, %d)=nil, want error", root.TreeSize)
-	}
-}
-
 func TestWaitForInclusion(t *testing.T) {
 	ctx := context.Background()
 	tree := proto.Clone(stestonly.LogTree).(*trillian.Tree)
@@ -196,8 +117,10 @@ func TestWaitForInclusion(t *testing.T) {
 	}{
 		{desc: "First leaf", leaf: []byte("A"), client: env.Log},
 		{desc: "Make TreeSize > 1", leaf: []byte("B"), client: env.Log},
-		{desc: "invalid inclusion proof", leaf: []byte("A"), skipPreCheck: true,
-			client: &MutatingLogClient{TrillianLogClient: env.Log, mutateInclusionProof: true}, wantErr: true},
+		{
+			desc: "invalid inclusion proof", leaf: []byte("A"), skipPreCheck: true,
+			client: &MutatingLogClient{TrillianLogClient: env.Log, mutateInclusionProof: true}, wantErr: true,
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			client, err := NewFromTree(test.client, tree, types.LogRootV1{})
@@ -207,8 +130,8 @@ func TestWaitForInclusion(t *testing.T) {
 
 			if !test.skipPreCheck {
 				cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-				if err := client.WaitForInclusion(cctx, test.leaf); status.Code(err) != codes.DeadlineExceeded {
-					t.Errorf("WaitForInclusion before sequencing: %v, want: not-nil", err)
+				if err := client.WaitForInclusion(cctx, test.leaf); err == nil {
+					t.Error("WaitForInclusion before sequencing succeeded, want error")
 				}
 				cancel()
 			}
@@ -309,7 +232,7 @@ func TestAddSequencedLeaves(t *testing.T) {
 		}, wantErr: true},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
-			c := &LogClient{LogVerifier: &LogVerifier{Hasher: rfc6962.DefaultHasher}}
+			c := &LogClient{LogVerifier: &LogVerifier{hasher: rfc6962.DefaultHasher}}
 			err := c.AddSequencedLeaves(ctx, tc.dataByIndex)
 			if gotErr := err != nil; gotErr != tc.wantErr {
 				t.Errorf("AddSequencedLeaves(): %v, wantErr: %v", err, tc.wantErr)

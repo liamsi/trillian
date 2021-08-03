@@ -27,8 +27,9 @@ import (
 	"github.com/golang/glog"
 	"github.com/google/trillian"
 	"github.com/google/trillian/client/backoff"
-	"github.com/google/trillian/merkle"
+	"github.com/google/trillian/internal/merkle/inmemory"
 	"github.com/google/trillian/merkle/compact"
+	"github.com/google/trillian/merkle/logverifier"
 	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/types"
 )
@@ -100,7 +101,6 @@ func RunLogIntegration(client trillian.TrillianLogClient, params TestParameters)
 			return fmt.Errorf("failed to get latest log root: %v %v", resp, err)
 		}
 
-		// TODO(gbelvin): Replace with VerifySignedLogRoot
 		var root types.LogRootV1
 		if err := root.UnmarshalBinary(resp.SignedLogRoot.GetLogRoot()); err != nil {
 			return fmt.Errorf("could not read current log root: %v", err)
@@ -131,7 +131,6 @@ func RunLogIntegration(client trillian.TrillianLogClient, params TestParameters)
 	// Step 3 - Use get entries to read back what was written, check leaves are correct
 	glog.Infof("Reading back leaves from log ...")
 	leafMap, err := readbackLogEntries(params.TreeID, client, params, leafCounts)
-
 	if err != nil {
 		return fmt.Errorf("could not read back log entries: %v", err)
 	}
@@ -232,26 +231,29 @@ func queueLeaves(client trillian.TrillianLogClient, params TestParameters) (map[
 		if len(leaves) >= params.QueueBatchSize || (l+1) == params.LeafCount {
 			glog.Infof("Queueing %d leaves...", len(leaves))
 
-			ctx, cancel := getRPCDeadlineContext(params)
-			b := &backoff.Backoff{
-				Min:    100 * time.Millisecond,
-				Max:    10 * time.Second,
-				Factor: 2,
-				Jitter: true,
-			}
+			for _, leaf := range leaves {
+				ctx, cancel := getRPCDeadlineContext(params)
+				b := &backoff.Backoff{
+					Min:    100 * time.Millisecond,
+					Max:    10 * time.Second,
+					Factor: 2,
+					Jitter: true,
+				}
 
-			err := b.Retry(ctx, func() error {
-				_, err := client.QueueLeaves(ctx, &trillian.QueueLeavesRequest{
-					LogId:  params.TreeID,
-					Leaves: leaves,
+				err := b.Retry(ctx, func() error {
+					_, err := client.QueueLeaf(ctx, &trillian.QueueLeafRequest{
+						LogId: params.TreeID,
+						Leaf:  leaf,
+					})
+					return err
 				})
-				return err
-			})
-			cancel()
+				cancel()
 
-			if err != nil {
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
 			}
+
 			leaves = leaves[:0] // starting new batch
 		}
 	}
@@ -265,22 +267,27 @@ func waitForSequencing(treeID int64, client trillian.TrillianLogClient, params T
 	glog.Infof("Waiting for sequencing until: %v", endTime)
 
 	for endTime.After(time.Now()) {
-		req := trillian.GetSequencedLeafCountRequest{LogId: treeID}
+		req := trillian.GetLatestSignedLogRootRequest{LogId: treeID}
 		ctx, cancel := getRPCDeadlineContext(params)
-		sequencedLeaves, err := client.GetSequencedLeafCount(ctx, &req)
+		resp, err := client.GetLatestSignedLogRoot(ctx, &req)
 		cancel()
 
 		if err != nil {
 			return err
 		}
 
-		glog.Infof("Leaf count: %d", sequencedLeaves.LeafCount)
+		var root types.LogRootV1
+		if err := root.UnmarshalBinary(resp.SignedLogRoot.GetLogRoot()); err != nil {
+			return err
+		}
 
-		if sequencedLeaves.LeafCount >= params.LeafCount+params.StartLeaf {
+		glog.Infof("Leaf count: %d", root.TreeSize)
+
+		if root.TreeSize >= uint64(params.LeafCount+params.StartLeaf) {
 			return nil
 		}
 
-		glog.Infof("Leaves sequenced: %d. Still waiting ...", sequencedLeaves.LeafCount)
+		glog.Infof("Leaves sequenced: %d. Still waiting ...", root.TreeSize)
 
 		time.Sleep(params.SequencingPollWait)
 	}
@@ -311,9 +318,9 @@ func readbackLogEntries(logID int64, client trillian.TrillianLogClient, params T
 		}
 
 		glog.Infof("Reading %d leaves from %d ...", numLeaves, currentLeaf+params.StartLeaf)
-		req := makeGetLeavesByIndexRequest(logID, currentLeaf+params.StartLeaf, numLeaves)
+		req := &trillian.GetLeavesByRangeRequest{LogId: logID, StartIndex: currentLeaf + params.StartLeaf, Count: numLeaves}
 		ctx, cancel := getRPCDeadlineContext(params)
-		response, err := client.GetLeavesByIndex(ctx, req)
+		response, err := client.GetLeavesByRange(ctx, req)
 		cancel()
 
 		if err != nil {
@@ -363,7 +370,7 @@ func readbackLogEntries(logID int64, client trillian.TrillianLogClient, params T
 	return leafMap, nil
 }
 
-func checkLogRootHashMatches(tree *merkle.InMemoryMerkleTree, client trillian.TrillianLogClient, params TestParameters) error {
+func checkLogRootHashMatches(tree *inmemory.MerkleTree, client trillian.TrillianLogClient, params TestParameters) error {
 	// Check the STH against the hash we got from our tree
 	resp, err := getLatestSignedLogRoot(client, params)
 	if err != nil {
@@ -438,7 +445,7 @@ func checkInclusionProofTreeSizeOutOfRange(logID int64, client trillian.Trillian
 // at least as big as the index where STHs where the index is a multiple of the sequencer batch size. All
 // proofs returned should match ones computed by the alternate Merkle Tree implementation, which differs
 // from what the log uses.
-func checkInclusionProofsAtIndex(index int64, logID int64, tree *merkle.InMemoryMerkleTree, client trillian.TrillianLogClient, params TestParameters) error {
+func checkInclusionProofsAtIndex(index int64, logID int64, tree *inmemory.MerkleTree, client trillian.TrillianLogClient, params TestParameters) error {
 	for treeSize := int64(0); treeSize < min(params.LeafCount, int64(2*params.SequencerBatchSize)); treeSize++ {
 		ctx, cancel := getRPCDeadlineContext(params)
 		resp, err := client.GetInclusionProof(ctx, &trillian.GetInclusionProofRequest{
@@ -459,7 +466,7 @@ func checkInclusionProofsAtIndex(index int64, logID int64, tree *merkle.InMemory
 
 		// Verify inclusion proof.
 		root := tree.RootAtSnapshot(treeSize).Hash()
-		verifier := merkle.NewLogVerifier(rfc6962.DefaultHasher)
+		verifier := logverifier.New(rfc6962.DefaultHasher)
 		// Offset by 1 to make up for C++ / Go implementation differences.
 		merkleLeafHash := tree.LeafHash(index + 1)
 		if err := verifier.VerifyInclusionProof(index, treeSize, resp.Proof.Hashes, root, merkleLeafHash); err != nil {
@@ -470,7 +477,7 @@ func checkInclusionProofsAtIndex(index int64, logID int64, tree *merkle.InMemory
 	return nil
 }
 
-func checkConsistencyProof(consistParams consistencyProofParams, treeID int64, tree *merkle.InMemoryMerkleTree, client trillian.TrillianLogClient, params TestParameters, batchSize int64) error {
+func checkConsistencyProof(consistParams consistencyProofParams, treeID int64, tree *inmemory.MerkleTree, client trillian.TrillianLogClient, params TestParameters, batchSize int64) error {
 	// We expect the proof request to succeed
 	ctx, cancel := getRPCDeadlineContext(params)
 	req := &trillian.GetConsistencyProofRequest{
@@ -496,24 +503,14 @@ func checkConsistencyProof(consistParams consistencyProofParams, treeID int64, t
 		return fmt.Errorf("requested tree size %d > available tree size %d", req.SecondTreeSize, root.TreeSize)
 	}
 
-	verifier := merkle.NewLogVerifier(rfc6962.DefaultHasher)
+	verifier := logverifier.New(rfc6962.DefaultHasher)
 	root1 := tree.RootAtSnapshot(req.FirstTreeSize).Hash()
 	root2 := tree.RootAtSnapshot(req.SecondTreeSize).Hash()
 	return verifier.VerifyConsistencyProof(req.FirstTreeSize, req.SecondTreeSize,
 		root1, root2, resp.Proof.Hashes)
 }
 
-func makeGetLeavesByIndexRequest(logID int64, startLeaf, numLeaves int64) *trillian.GetLeavesByIndexRequest {
-	leafIndices := make([]int64, 0, numLeaves)
-
-	for l := int64(0); l < numLeaves; l++ {
-		leafIndices = append(leafIndices, l+startLeaf)
-	}
-
-	return &trillian.GetLeavesByIndexRequest{LogId: logID, LeafIndex: leafIndices}
-}
-
-func buildMemoryMerkleTree(leafMap map[int64]*trillian.LogLeaf, params TestParameters) (*merkle.InMemoryMerkleTree, error) {
+func buildMemoryMerkleTree(leafMap map[int64]*trillian.LogLeaf, params TestParameters) (*inmemory.MerkleTree, error) {
 	// Build the same tree with two different Merkle tree implementations as an
 	// additional check. We don't just rely on the compact range as the server
 	// uses the same code so bugs could be masked.
@@ -521,7 +518,7 @@ func buildMemoryMerkleTree(leafMap map[int64]*trillian.LogLeaf, params TestParam
 	fact := compact.RangeFactory{Hash: hasher.HashChildren}
 	cr := fact.NewEmptyRange(0)
 
-	merkleTree := merkle.NewInMemoryMerkleTree(hasher)
+	merkleTree := inmemory.NewMerkleTree(hasher)
 
 	// We don't simply iterate the map, as we need to preserve the leaves order.
 	for l := params.StartLeaf; l < params.LeafCount; l++ {

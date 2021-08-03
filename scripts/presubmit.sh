@@ -26,15 +26,17 @@ check_cmd() {
 }
 
 usage() {
-  echo "$0 [--coverage] [--fix] [--no-build] [--no-linters] [--no-generate]"
+  echo "$0 [--coverage] [--fix] [--no-mod-tidy] [--no-build] [--no-linters] [--no-generate] [--empty-diff]"
 }
 
 main() {
   local coverage=0
   local fix=0
+  local run_mod_tidy=1
   local run_build=1
   local run_lint=1
   local run_generate=1
+  local empty_diff=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --coverage)
@@ -42,6 +44,9 @@ main() {
         ;;
       --fix)
         fix=1
+        ;;
+      --no-mod-tidy)
+        run_mod_tidy=0
         ;;
       --help)
         usage
@@ -55,6 +60,9 @@ main() {
         ;;
       --no-generate)
         run_generate=0
+        ;;
+      --empty-diff)
+        empty_diff=1
         ;;
       *)
         usage
@@ -71,6 +79,7 @@ main() {
     grep -v mock_ | \
     grep -v .pb.go | \
     grep -v _string.go | \
+    grep -v .shims.go | \
     tr '\n' ' ')"
 
   # Prevent the creation of proto files with .txt extensions.
@@ -88,8 +97,10 @@ main() {
     gofmt -s -w ${go_srcs}
     echo 'running goimports'
     goimports -w ${go_srcs}
-    echo 'running go mod tidy'
-    go mod tidy
+    if [[ "$run_mod_tidy" -eq 1 ]]; then
+      echo 'running go mod tidy'
+      go mod tidy
+    fi
   fi
 
   if [[ "${run_build}" -eq 1 ]]; then
@@ -125,6 +136,11 @@ main() {
     go generate -run="protoc" ./...
     go generate -run="mockgen" ./...
     go generate -run="stringer" ./...
+  fi
+
+  if [[ "${empty_diff}" -eq 1 ]]; then
+    echo 'checking git diff is empty'
+    git diff --exit-code
   fi
 }
 

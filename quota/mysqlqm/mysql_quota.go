@@ -37,11 +37,9 @@ const (
 	countFromUnsequencedQuery = "SELECT COUNT(*) FROM Unsequenced"
 )
 
-var (
-	// ErrTooManyUnsequencedRows is returned when tokens are requested but Unsequenced has grown
-	// beyond the configured limit.
-	ErrTooManyUnsequencedRows = errors.New("too many unsequenced rows")
-)
+// ErrTooManyUnsequencedRows is returned when tokens are requested but Unsequenced has grown
+// beyond the configured limit.
+var ErrTooManyUnsequencedRows = errors.New("too many unsequenced rows")
 
 // QuotaManager is a MySQL-based quota.Manager implementation.
 //
@@ -77,27 +75,6 @@ func (m *QuotaManager) GetTokens(ctx context.Context, numTokens int, specs []quo
 		}
 	}
 	return nil
-}
-
-// PeekTokens implements quota.Manager.PeekTokens.
-// Global/Write tokens reflect the number of rows in the Unsequenced tables, other specs are
-// considered infinite.
-func (m *QuotaManager) PeekTokens(ctx context.Context, specs []quota.Spec) (map[quota.Spec]int, error) {
-	tokens := make(map[quota.Spec]int)
-	for _, spec := range specs {
-		var num int
-		if spec.Group == quota.Global && spec.Kind == quota.Write {
-			count, err := m.countUnsequenced(ctx)
-			if err != nil {
-				return nil, err
-			}
-			num = m.MaxUnsequencedRows - count
-		} else {
-			num = quota.MaxTokens
-		}
-		tokens[spec] = num
-	}
-	return tokens, nil
 }
 
 // PutTokens implements quota.Manager.PutTokens.

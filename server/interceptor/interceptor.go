@@ -55,14 +55,10 @@ var (
 	contextErrCounter    monitoring.Counter
 	metricsOnce          sync.Once
 	enabledServices      = map[string]bool{
-		"trillian.TrillianLog":      true,
-		"trillian.TrillianMap":      true,
-		"trillian.TrillianMapWrite": true,
-		"trillian.TrillianAdmin":    true,
-		"TrillianLog":               true,
-		"TrillianMap":               true,
-		"TrillianMapWrite":          true,
-		"TrillianAdmin":             true,
+		"trillian.TrillianLog":   true,
+		"trillian.TrillianAdmin": true,
+		"TrillianLog":            true,
+		"TrillianAdmin":          true,
 	}
 )
 
@@ -226,8 +222,8 @@ func (tp *trillianProcessor) After(ctx context.Context, resp interface{}, method
 	// be replenished:
 	// * Invalid requests (a bad request shouldn't spend sequencing-based tokens, as it won't
 	//   cause a corresponding sequencing to happen)
-	// * Requests that filter out duplicates (e.g., QueueLeaf and QueueLeaves, for the same
-	//   reason as above: duplicates aren't queued for sequencing)
+	// * Requests that filter out duplicates (e.g., QueueLeaf, for the same reason as above:
+	//   duplicates aren't queued for sequencing)
 	// These are only applied for Refundable specs.
 	refunds := make([]quota.Spec, 0)
 	for _, s := range tp.info.specs {
@@ -251,12 +247,6 @@ func (tp *trillianProcessor) After(ctx context.Context, resp interface{}, method
 			}
 		case *trillian.AddSequencedLeavesResponse:
 			for _, leaf := range resp.GetResults() {
-				if !isLeafOK(leaf) {
-					tokens++
-				}
-			}
-		case *trillian.QueueLeavesResponse:
-			for _, leaf := range resp.GetQueuedLeaves() {
 				if !isLeafOK(leaf) {
 					tokens++
 				}
@@ -290,8 +280,10 @@ func isLeafOK(leaf *trillian.QueuedLogLeaf) bool {
 	return leaf == nil || leaf.Status == nil || leaf.Status.Code == int32(codes.OK)
 }
 
-var fullyQualifiedRE = regexp.MustCompile(`^/([\w.]+)/(\w+)$`)
-var unqualifiedRE = regexp.MustCompile(`^/(\w+)\.(\w+)$`)
+var (
+	fullyQualifiedRE = regexp.MustCompile(`^/([\w.]+)/(\w+)$`)
+	unqualifiedRE    = regexp.MustCompile(`^/(\w+)\.(\w+)$`)
+)
 
 // serviceName returns the fully qualified service name
 // "some.package.service" for "/some.package.service/method".
@@ -390,36 +382,19 @@ func newRPCInfoForRequest(req interface{}) (*rpcInfo, error) {
 		*trillian.GetLatestSignedLogRootRequest:
 		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
 		info.tokens = 1
-	case *trillian.GetLeavesByHashRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
-		info.tokens = len(req.GetLeafHash())
-	case *trillian.GetLeavesByIndexRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
-		info.tokens = len(req.GetLeafIndex())
 	case *trillian.GetLeavesByRangeRequest:
 		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
 		info.tokens = 1
 		if c := req.GetCount(); c > 1 {
 			info.tokens = int(c)
 		}
-	case *trillian.GetSequencedLeafCountRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
-
 	// Log / readwrite
 	case *trillian.QueueLeafRequest:
 		info.readonly = false
 		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG}
 		info.tokens = 1
-	case *trillian.QueueLeavesRequest:
-		info.readonly = false
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG}
-		info.tokens = len(req.GetLeaves())
 
 	// Pre-ordered Log / readwrite
-	case *trillian.AddSequencedLeafRequest:
-		info.readonly = false
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_PREORDERED_LOG}
-		info.tokens = 1
 	case *trillian.AddSequencedLeavesRequest:
 		info.readonly = false
 		info.treeTypes = []trillian.TreeType{trillian.TreeType_PREORDERED_LOG}
@@ -429,38 +404,6 @@ func newRPCInfoForRequest(req interface{}) (*rpcInfo, error) {
 	case *trillian.InitLogRequest:
 		info.readonly = false
 		info.treeTypes = []trillian.TreeType{trillian.TreeType_LOG, trillian.TreeType_PREORDERED_LOG}
-		info.tokens = 1
-
-	// Map / readonly
-	case *trillian.GetMapLeafByRevisionRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetIndex())
-	case *trillian.GetMapLeafRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetIndex())
-	case *trillian.GetMapLeavesByRevisionRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetIndex())
-	case *trillian.GetMapLeavesRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetIndex())
-	case *trillian.GetSignedMapRootByRevisionRequest,
-		*trillian.GetSignedMapRootRequest:
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = 1
-
-	// Map / readwrite
-	case *trillian.SetMapLeavesRequest:
-		info.readonly = false
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetLeaves())
-	case *trillian.WriteMapLeavesRequest:
-		info.readonly = false
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
-		info.tokens = len(req.GetLeaves())
-	case *trillian.InitMapRequest:
-		info.readonly = false
-		info.treeTypes = []trillian.TreeType{trillian.TreeType_MAP}
 		info.tokens = 1
 
 	default:
@@ -480,8 +423,6 @@ func newRPCInfo(req interface{}) (*rpcInfo, error) {
 		switch req := req.(type) {
 		case logIDRequest:
 			info.treeID = req.GetLogId()
-		case mapIDRequest:
-			info.treeID = req.GetMapId()
 		case treeIDRequest:
 			info.treeID = req.GetTreeId()
 		case treeRequest:
@@ -515,10 +456,6 @@ func newRPCInfo(req interface{}) (*rpcInfo, error) {
 
 type logIDRequest interface {
 	GetLogId() int64
-}
-
-type mapIDRequest interface {
-	GetMapId() int64
 }
 
 type treeIDRequest interface {

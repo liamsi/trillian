@@ -16,7 +16,6 @@ package merkle
 
 import (
 	"errors"
-	"fmt"
 	"math/bits"
 
 	"github.com/google/trillian/merkle/compact"
@@ -24,94 +23,72 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// NodeFetch bundles a nodeID with additional information on how to use the node to construct the
-// correct proof.
+// NodeFetch bundles a node ID with additional information on how to use the
+// node to construct a proof.
 type NodeFetch struct {
 	ID     compact.NodeID
 	Rehash bool
 }
 
-// checkSnapshot performs a couple of simple sanity checks on ss and treeSize
-// and returns an error if there's a problem.
-func checkSnapshot(ssDesc string, ss, treeSize int64) error {
-	if ss < 1 {
-		return fmt.Errorf("%s %d < 1", ssDesc, ss)
-	}
-	if ss > treeSize {
-		return fmt.Errorf("%s %d > treeSize %d", ssDesc, ss, treeSize)
-	}
-	return nil
-}
-
 // CalcInclusionProofNodeAddresses returns the tree node IDs needed to build an
-// inclusion proof for a specified leaf and tree size. The snapshot parameter
-// is the tree size being queried for, treeSize is the actual size of the tree
-// at the revision we are using to fetch nodes (this can be > snapshot).
+// inclusion proof for a specified tree size and leaf index. All the returned
+// nodes represent complete subtrees in the tree of this size or above.
 //
 // Use Rehash function to compose the proof after the node hashes are fetched.
-func CalcInclusionProofNodeAddresses(snapshot, index, treeSize int64) ([]NodeFetch, error) {
-	if err := checkSnapshot("snapshot", snapshot, treeSize); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for inclusion proof: %v", err)
+func CalcInclusionProofNodeAddresses(size, index int64) ([]NodeFetch, error) {
+	if size < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for inclusion proof: size %d < 1", size)
 	}
-	if index >= snapshot {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for inclusion proof: index %d is >= snapshot %d", index, snapshot)
+	if index >= size {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for inclusion proof: index %d is >= size %d", index, size)
 	}
 	if index < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for inclusion proof: index %d is < 0", index)
 	}
-	// Note: If snapshot < treeSize, the storage might not contain the
-	// "ephemeral" node of this proof, so rehashing is needed.
-	return proofNodes(uint64(index), 0, uint64(snapshot), snapshot < treeSize), nil
+	return proofNodes(uint64(index), 0, uint64(size), true), nil
 }
 
 // CalcConsistencyProofNodeAddresses returns the tree node IDs needed to build
-// a consistency proof between two specified tree sizes. snapshot1 and
-// snapshot2 represent the two tree sizes for which consistency should be
-// proved, treeSize is the actual size of the tree at the revision we are using
-// to fetch nodes (this can be > snapshot2).
-//
-// The caller is responsible for checking that the input tree sizes correspond
-// to valid tree heads. All returned NodeIDs are tree coordinates within the
-// new tree. It is assumed that they will be fetched from storage at a revision
-// corresponding to the STH associated with the treeSize parameter.
+// a consistency proof between two specified tree sizes. All the returned nodes
+// represent complete subtrees in the tree of size2 or above.
 //
 // Use Rehash function to compose the proof after the node hashes are fetched.
-func CalcConsistencyProofNodeAddresses(snapshot1, snapshot2, treeSize int64) ([]NodeFetch, error) {
-	if err := checkSnapshot("snapshot1", snapshot1, treeSize); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: %v", err)
+func CalcConsistencyProofNodeAddresses(size1, size2 int64) ([]NodeFetch, error) {
+	if size1 < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: size1 %d < 1", size1)
 	}
-	if err := checkSnapshot("snapshot2", snapshot2, treeSize); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: %v", err)
+	if size2 < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: size2 %d < 1", size2)
 	}
-	if snapshot1 > snapshot2 {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: snapshot1 %d > snapshot2 %d", snapshot1, snapshot2)
+	if size1 > size2 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid parameter for consistency proof: size1 %d > size2 %d", size1, size2)
 	}
 
-	return snapshotConsistency(snapshot1, snapshot2, treeSize)
+	return consistencyNodes(uint64(size1), uint64(size2)), nil
 }
 
-// snapshotConsistency does the calculation of consistency proof node addresses
-// between two snapshots in a bigger tree of the given size.
-func snapshotConsistency(snapshot1, snapshot2, treeSize int64) ([]NodeFetch, error) {
-	if snapshot1 == snapshot2 {
-		return []NodeFetch{}, nil
+// consistencyNodes returns node addresses for the consistency proof between
+// the given tree sizes.
+func consistencyNodes(size1, size2 uint64) []NodeFetch {
+	if size1 == size2 {
+		return []NodeFetch{}
 	}
 
 	// TODO(pavelkalinnikov): Make the capacity estimate accurate.
-	proof := make([]NodeFetch, 0, bits.Len64(uint64(snapshot2))+1)
+	proof := make([]NodeFetch, 0, bits.Len64(size2)+1)
 
-	// Find the biggest perfect subtree that ends at snapshot1.
-	level := uint(bits.TrailingZeros64(uint64(snapshot1)))
-	index := uint64((snapshot1 - 1)) >> level
-	// If it does not cover the whole snapshot1 tree, add this node to the proof.
+	// Find the biggest perfect subtree that ends at size1.
+	level := uint(bits.TrailingZeros64(size1))
+	index := (size1 - 1) >> level
+	// If it does not cover the whole size1 tree, add this node to the proof.
 	if index != 0 {
 		n := compact.NewNodeID(level, index)
 		proof = append(proof, NodeFetch{ID: n})
 	}
 
-	// Now append the path from this node to the root of snapshot2.
-	p := proofNodes(index, level, uint64(snapshot2), snapshot2 < treeSize)
-	return append(proof, p...), nil
+	// Now append the path from this node to the root of size2.
+	p := proofNodes(index, level, size2, true)
+	return append(proof, p...)
 }
 
 // proofNodes returns the node IDs necessary to prove that the (level, index)
@@ -134,6 +111,8 @@ func proofNodes(index uint64, level uint, size uint64, rehash bool) []NodeFetch 
 	// are special, because their hashes are collapsed into a single "ephemeral"
 	// hash. This hash is already known if rehash==false, otherwise the caller
 	// needs to compute it based on the hashes of compact range [end+l, size).
+	//
+	// TODO(pavelkalinnikov): Always assume rehash = true.
 	var right []compact.NodeID
 	if r != 0 {
 		if rehash {

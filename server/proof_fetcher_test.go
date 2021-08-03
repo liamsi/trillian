@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/google/trillian/internal/merkle/inmemory"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/merkle/rfc6962"
 	"github.com/google/trillian/storage/testonly"
@@ -39,13 +40,12 @@ func TestTree813FetchAll(t *testing.T) {
 	})
 
 	for l := int64(271); l < ts; l++ {
-		fetches, err := merkle.CalcInclusionProofNodeAddresses(ts, l, ts)
-
+		fetches, err := merkle.CalcInclusionProofNodeAddresses(ts, l)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		proof, err := fetchNodesAndBuildProof(ctx, r, hasher, testTreeRevision, int64(l), fetches)
+		proof, err := fetchNodesAndBuildProof(ctx, r, hasher, int64(l), fetches)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,12 +82,12 @@ func TestTree32InclusionProofFetchAll(t *testing.T) {
 
 		for s := int64(2); s <= int64(ts); s++ {
 			for l := int64(0); l < s; l++ {
-				fetches, err := merkle.CalcInclusionProofNodeAddresses(s, l, int64(ts))
+				fetches, err := merkle.CalcInclusionProofNodeAddresses(s, l)
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				proof, err := fetchNodesAndBuildProof(ctx, r, hasher, testTreeRevision, int64(l), fetches)
+				proof, err := fetchNodesAndBuildProof(ctx, r, hasher, int64(l), fetches)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -127,13 +127,13 @@ func TestTree32InclusionProofFetchMultiBatch(t *testing.T) {
 
 	for s := int64(2); s <= 32; s++ {
 		for l := int64(0); l < s; l++ {
-			fetches, err := merkle.CalcInclusionProofNodeAddresses(s, l, 32)
+			fetches, err := merkle.CalcInclusionProofNodeAddresses(s, l)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			// Use the highest tree revision that should be available from the node reader
-			proof, err := fetchNodesAndBuildProof(ctx, r, hasher, testTreeRevision+3, l, fetches)
+			proof, err := fetchNodesAndBuildProof(ctx, r, hasher, l, fetches)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,12 +165,12 @@ func TestTree32ConsistencyProofFetchAll(t *testing.T) {
 
 		for s1 := int64(2); s1 < int64(ts); s1++ {
 			for s2 := int64(s1 + 1); s2 < int64(ts); s2++ {
-				fetches, err := merkle.CalcConsistencyProofNodeAddresses(s1, s2, int64(ts))
+				fetches, err := merkle.CalcConsistencyProofNodeAddresses(s1, s2)
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				proof, err := fetchNodesAndBuildProof(ctx, r, hasher, testTreeRevision, int64(s1), fetches)
+				proof, err := fetchNodesAndBuildProof(ctx, r, hasher, int64(s1), fetches)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -201,13 +201,13 @@ func expandLeaves(n, m int) []string {
 
 // expectedRootAtSize uses the in memory tree, the tree built with Compact Merkle Tree should
 // have the same root.
-func expectedRootAtSize(mt *merkle.InMemoryMerkleTree) []byte {
+func expectedRootAtSize(mt *inmemory.MerkleTree) []byte {
 	return mt.CurrentRoot().Hash()
 }
 
-func treeAtSize(n int) *merkle.InMemoryMerkleTree {
+func treeAtSize(n int) *inmemory.MerkleTree {
 	leaves := expandLeaves(0, n-1)
-	mt := merkle.NewInMemoryMerkleTree(rfc6962.DefaultHasher)
+	mt := inmemory.NewMerkleTree(rfc6962.DefaultHasher)
 	for _, leaf := range leaves {
 		mt.AddLeaf([]byte(leaf))
 	}

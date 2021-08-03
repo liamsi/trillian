@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/ptypes"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
@@ -32,6 +31,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	storageto "github.com/google/trillian/storage/testonly"
 )
@@ -91,7 +91,6 @@ func (*logTests) TestSnapshot(ctx context.Context, t *testing.T, s storage.LogSt
 
 	activeLog := mustCreateTree(ctx, t, as, storageto.LogTree)
 	mustSignAndStoreLogRoot(ctx, t, s, activeLog, &types.LogRootV1{})
-	mapTreeID := mustCreateTree(ctx, t, as, storageto.MapTree).TreeId
 
 	tests := []struct {
 		desc    string
@@ -110,11 +109,6 @@ func (*logTests) TestSnapshot(ctx context.Context, t *testing.T, s storage.LogSt
 		{
 			desc: "frozenSnapshot",
 			tree: frozenLog,
-		},
-		{
-			desc:    "mapSnapshot",
-			tree:    logTree(mapTreeID),
-			wantErr: true,
 		},
 	}
 
@@ -154,13 +148,11 @@ func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s s
 		wantNeedsInit bool
 		wantErr       bool
 		wantLogRoot   []byte
-		wantTXRev     int64
 	}{
 		{
 			desc:          "uninitializedBegin",
 			tree:          logTree(-1),
 			wantNeedsInit: true,
-			wantTXRev:     0,
 		},
 		{
 			desc: "activeLogBegin",
@@ -172,7 +164,6 @@ func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s s
 				}
 				return b
 			}(),
-			wantTXRev: 1,
 		},
 	}
 
@@ -182,10 +173,6 @@ func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s s
 				root, err := tx.LatestSignedLogRoot(ctx)
 				if err != nil && !(err == storage.ErrTreeNeedsInit && test.wantNeedsInit) {
 					t.Fatalf("%v: LatestSignedLogRoot() returned err = %v", test.desc, err)
-				}
-				gotRev, _ := tx.WriteRevision(ctx)
-				if gotRev != test.wantTXRev {
-					t.Errorf("%v: WriteRevision() = %v, want = %v", test.desc, gotRev, test.wantTXRev)
 				}
 				if got, want := root.GetLogRoot(), test.wantLogRoot; !bytes.Equal(got, want) {
 					var logRoot types.LogRootV1
@@ -207,9 +194,8 @@ func (*logTests) TestReadWriteTransaction(ctx context.Context, t *testing.T, s s
 
 func logTree(logID int64) *trillian.Tree {
 	return &trillian.Tree{
-		TreeId:       logID,
-		TreeType:     trillian.TreeType_LOG,
-		HashStrategy: trillian.HashStrategy_RFC6962_SHA256,
+		TreeId:   logID,
+		TreeType: trillian.TreeType_LOG,
 	}
 }
 
@@ -230,7 +216,7 @@ func initAddSequencedLeavesTest(ctx context.Context, t *testing.T, s storage.Log
 func (t *addSequencedLeavesTest) addSequencedLeaves(leaves []*trillian.LogLeaf) {
 	ctx := context.TODO()
 	// Time we will queue all leaves at.
-	var fakeQueueTime = time.Date(2016, 11, 10, 15, 16, 27, 0, time.UTC)
+	fakeQueueTime := time.Date(2016, 11, 10, 15, 16, 27, 0, time.UTC)
 
 	queued, err := t.s.AddSequencedLeaves(ctx, t.tree, leaves, fakeQueueTime)
 	if err != nil {
@@ -376,7 +362,7 @@ func testGetLeavesByRangeImpl(ctx context.Context, t *testing.T, s storage.LogSt
 }
 
 func (*logTests) TestGetLeavesByRangeFromLog(ctx context.Context, t *testing.T, s storage.LogStorage, as storage.AdminStorage) {
-	var tests = []getLeavesByRangeTest{
+	tests := []getLeavesByRangeTest{
 		{start: 0, count: 1, want: []int64{0}},
 		{start: 0, count: 2, want: []int64{0, 1}},
 		{start: 1, count: 3, want: []int64{1, 2, 3}},
@@ -395,7 +381,7 @@ func (*logTests) TestGetLeavesByRangeFromLog(ctx context.Context, t *testing.T, 
 }
 
 func (*logTests) TestGetLeavesByRangeFromPreorderedLog(ctx context.Context, t *testing.T, s storage.LogStorage, as storage.AdminStorage) {
-	var tests = []getLeavesByRangeTest{
+	tests := []getLeavesByRangeTest{
 		{start: 0, count: 1, want: []int64{0}},
 		{start: 0, count: 2, want: []int64{0, 1}},
 		{start: 1, count: 3, want: []int64{1, 2, 3}},
@@ -449,8 +435,8 @@ func (*logTests) TestDequeueLeaves(ctx context.Context, t *testing.T, s storage.
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second) // Retry until timeout
 	defer cancel()
 	leaves2 := dequeueAndSequence(cctx, t, s, tree, fakeDequeueCutoffTime, leavesToInsert, 0)
-	if len(leaves2) != leavesToInsert {
-		t.Fatalf("Dequeued %d leaves but expected to get %d", len(leaves2), leavesToInsert)
+	if got, want := len(leaves2), leavesToInsert; got != want {
+		t.Fatalf("Got %d leaves want %d", got, want)
 	}
 
 	// If we dequeue again then we should now get nothing
@@ -460,8 +446,8 @@ func (*logTests) TestDequeueLeaves(ctx context.Context, t *testing.T, s storage.
 			if err != nil {
 				t.Fatalf("Failed to dequeue leaves (second time): %v", err)
 			}
-			if len(leaves) != 0 {
-				t.Fatalf("Dequeued %d leaves but expected to get %d", len(leaves), leavesToInsert)
+			if got, want := len(leaves), 0; got != want {
+				t.Fatalf("Got %d leaves want %d", got, want)
 			}
 			return nil
 		},
@@ -479,20 +465,21 @@ func dequeueAndSequence(ctx context.Context, t *testing.T, ls storage.LogStorage
 	var ret []*trillian.LogLeaf
 	err := ls.ReadWriteTransaction(ctx, tree, func(ctx context.Context, tx storage.LogTreeTX) error {
 		ret = make([]*trillian.LogLeaf, 0, limit)
-		i := make(map[int64]int)
+		i := 0
 		start := time.Now()
-		for len(ret) < limit {
-			i[time.Now().Unix()]++
-			got, err := tx.DequeueLeaves(ctx, limit, ts)
+		for rem := limit; rem > 0; {
+			i++
+			got, err := tx.DequeueLeaves(ctx, rem, ts)
 			if err != nil {
 				return err
 			}
 			ret = append(ret, got...)
+			rem -= len(got)
 		}
 		t.Logf("DequeueLeaves took %v tries and %v to dequeue %d leaves", i, time.Since(start), len(ret))
 		ensureAllLeavesDistinct(t, ret)
 		ensureLeavesHaveQueueTimestamp(t, ret, ts)
-		iTimestamp := ptypes.TimestampNow()
+		iTimestamp := timestamppb.Now()
 		for i, l := range ret {
 			l.IntegrateTimestamp = iTimestamp
 			l.LeafIndex = int64(i) + startIndex
@@ -523,10 +510,7 @@ func ensureAllLeavesDistinct(t *testing.T, leaves []*trillian.LogLeaf) {
 func ensureLeavesHaveQueueTimestamp(t *testing.T, leaves []*trillian.LogLeaf, want time.Time) {
 	t.Helper()
 	for _, leaf := range leaves {
-		gotQTimestamp, err := ptypes.Timestamp(leaf.QueueTimestamp)
-		if err != nil {
-			t.Fatalf("Got invalid queue timestamp: %v", err)
-		}
+		gotQTimestamp := leaf.QueueTimestamp.AsTime()
 		if got, want := gotQTimestamp.UnixNano(), want.UnixNano(); got != want {
 			t.Errorf("Got leaf with QueueTimestampNanos = %v, want %v: %v", got, want, leaf)
 		}
@@ -534,7 +518,7 @@ func ensureLeavesHaveQueueTimestamp(t *testing.T, leaves []*trillian.LogLeaf, wa
 }
 
 func (*logTests) TestDequeueLeavesTwoBatches(ctx context.Context, t *testing.T, s storage.LogStorage, as storage.AdminStorage) {
-	var fakeDequeueCutoffTime = time.Date(2016, 11, 10, 15, 16, 30, 0, time.UTC)
+	fakeDequeueCutoffTime := time.Date(2016, 11, 10, 15, 16, 30, 0, time.UTC)
 	const leavesToInsert = 5
 	tree := mustCreateTree(ctx, t, as, storageto.LogTree)
 	mustSignAndStoreLogRoot(ctx, t, s, tree, &types.LogRootV1{})
@@ -555,7 +539,6 @@ func (*logTests) TestDequeueLeavesTwoBatches(ctx context.Context, t *testing.T, 
 	}
 
 	mustSignAndStoreLogRoot(ctx, t, s, tree, &types.LogRootV1{
-		Revision:       1,
 		TreeSize:       uint64(leavesToDequeue1),
 		TimestampNanos: 1,
 	})
@@ -602,8 +585,8 @@ func (*logTests) TestAddSequencedLeavesAndDequeueLeaves(ctx context.Context, t *
 		}
 	}
 
-	qts, _ := ptypes.TimestampProto(now)
-	its, _ := ptypes.TimestampProto(time.Unix(0, 0))
+	qts := timestamppb.New(now)
+	its := timestamppb.New(time.Unix(0, 0))
 
 	partial := make([]*trillian.LogLeaf, 0, len(leaves))
 	for _, leaf := range leaves {
@@ -632,7 +615,6 @@ func (*logTests) TestAddSequencedLeavesAndDequeueLeaves(ctx context.Context, t *
 		TimestampNanos: uint64(time.Now().UnixNano()),
 		TreeSize:       1,
 		RootHash:       []byte("roothash"),
-		Revision:       1,
 	})
 
 	// Check that the 2nd and 3rd sequenced entries are returned.
