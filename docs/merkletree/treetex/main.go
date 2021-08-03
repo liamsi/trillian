@@ -354,9 +354,9 @@ var nodeFormats = map[string]nodeTextFunc{
 			return fmt.Sprintf("{"+
 				"$node_{%[1]d.%[2]d}$\\vspace{2pt}\\\\"+
 				"$min_{%[1]d.%[2]d}="+
-				"min(min_{%[3]d.%[4]d},max_{%[5]d.%[6]d})$ \\\\"+
+				"min(min_{%[3]d.%[4]d},min_{%[5]d.%[6]d})$ \\\\"+
 				"$max_{%[1]d.%[2]d}="+
-				"max(max_{%[3]d.%[4]d},min_{%[5]d.%[6]d})$ \\\\ "+
+				"max(max_{%[3]d.%[4]d},max_{%[5]d.%[6]d})$ \\\\ "+
 				"$d_{%[1]d.%[2]d}="+
 				"H(node_{%[3]d.%[4]d} || node_{%[5]d.%[6]d})$"+
 				"}",
